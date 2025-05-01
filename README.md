@@ -1,6 +1,5 @@
 # Pubdex
-Lightweight rust lib to create a rocksdb index of address -> pubkey for opnet. 
-
+Lightweight rust indexer to create a rocksdb index of bitcoin address -> pubkey and pubkey -> bitcoin address
 
 ## rocksdb schema
 ```rust
