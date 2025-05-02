@@ -39,7 +39,7 @@ async fn main() -> Result<(), PubdexError> {
     );
 
     let db = Arc::new(create_database("./tmp")?);
-    state::init(db.clone()); // 👈 initializes the global DB
+    state::init(db.clone());
 
     let db_indexer = db.clone();
 
