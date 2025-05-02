@@ -4,30 +4,45 @@ pub mod db;
 pub mod indexer;
 pub mod state;
 
-use api::start_api_server;
+use api::{start_api_server, ApiError};
 use colored::Colorize;
-use db::create_database;
+use config::get_config;
+use db::{create_database, DBError};
 use indexer::run_indexer;
+use std::fmt;
 use std::fmt::Debug;
+
 use std::sync::Arc;
 
 #[derive(Debug)]
 enum PubdexError {
-    StdIoError(std::io::Error),
-    RocksDb(rocksdb::Error),
+    ApiError(ApiError),
+    DBError(DBError),
 }
 
-impl From<rocksdb::Error> for PubdexError {
-    fn from(err: rocksdb::Error) -> Self {
-        PubdexError::RocksDb(err)
+impl From<DBError> for PubdexError {
+    fn from(err: DBError) -> Self {
+        PubdexError::DBError(err)
     }
 }
 
-impl From<std::io::Error> for PubdexError {
-    fn from(err: std::io::Error) -> Self {
-        PubdexError::StdIoError(err)
+impl From<ApiError> for PubdexError {
+    fn from(err: ApiError) -> Self {
+        PubdexError::ApiError(err)
     }
 }
+
+impl fmt::Display for PubdexError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        match self {
+            PubdexError::ApiError(err) => write!(formatter, "Api Error: {}", err),
+            PubdexError::DBError(err) => write!(formatter, "DB Error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for PubdexError {}
+
 #[actix_web::main] // Actix+Tokio single‑thread runtime
 async fn main() -> Result<(), PubdexError> {
     println!(
@@ -38,18 +53,18 @@ async fn main() -> Result<(), PubdexError> {
         "\n\nLoading db...".cyan().bold()
     );
 
-    let db = Arc::new(create_database("./tmp")?);
-    state::init(db.clone());
+    let config = get_config();
 
-    let db_indexer = db.clone();
+    let db = Arc::new(create_database(&config.rocksdb.path)?);
+    state::init(db.clone());
 
     println!("{}", "Starting indexer...".cyan().bold());
     let _indexer_handle = tokio::task::spawn_blocking(move || {
         // tokio::runtime::Handle::current().block_on(run_indexer(...))
-        run_indexer(db_indexer);
+        run_indexer(&config.bitcoin_rpc);
     });
 
     println!("{}", "Starting api server...".cyan().bold());
-    start_api_server().await?;
+    start_api_server(&config.api.ip, &config.api.port).await?;
     Ok(())
 }
