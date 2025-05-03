@@ -1,4 +1,5 @@
 pub mod api;
+pub mod chain;
 pub mod config;
 pub mod db;
 pub mod indexer;
@@ -11,6 +12,7 @@ use db::{create_database, DBError};
 use indexer::run_indexer;
 use std::fmt;
 use std::fmt::Debug;
+use std::panic;
 
 use std::sync::Arc;
 
@@ -52,6 +54,12 @@ async fn main() -> Result<(), PubdexError> {
         "\n\nGithub: https://github.com/bitapeslabs/pubdex".yellow(),
         "\n\nLoading db...".cyan().bold()
     );
+    let orig_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        // invoke the default handler and exit the process
+        orig_hook(panic_info);
+        std::process::exit(1);
+    }));
 
     let config = get_config();
 
