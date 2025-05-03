@@ -1,5 +1,6 @@
-use crate::db::get_indexer_tip;
-use actix_web::{get, App, HttpServer};
+use crate::db::{get_indexer_tip, IndexerTipStateSerializable};
+use actix_web::{get, App, HttpResponse, HttpServer, Responder};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::{AddrParseError, SocketAddrV4};
 // This struct represents state
@@ -31,17 +32,27 @@ impl fmt::Display for ApiError {
 }
 
 impl std::error::Error for ApiError {}
-
-#[get("/indexer-height")]
-async fn index() -> String {
+#[derive(Serialize, Deserialize)]
+struct ApiJsonError {
+    message: String,
+}
+#[get("/indexer-state")]
+async fn indexer_state() -> impl Responder {
     match get_indexer_tip() {
-        Ok(result) => result.to_string(),
-        Err(e) => format!("{}: {}", "An error ocurred", e),
+        Ok(result) => {
+            let tip_state: IndexerTipStateSerializable = result.into();
+            HttpResponse::Ok().json(tip_state)
+        }
+        Err(e) => {
+            let error = ApiJsonError {
+                message: e.to_string(),
+            };
+            HttpResponse::InternalServerError().json(error)
+        }
     }
 }
-
 pub async fn start_api_server(ip: &str, port: &u16) -> Result<(), ApiError> {
-    let server = HttpServer::new(|| App::new().service(index))
+    let server = HttpServer::new(|| App::new().service(indexer_state))
         .bind(SocketAddrV4::new(ip.parse()?, *port))?;
 
     println!("API server started successfully on {}:{}", ip, port);

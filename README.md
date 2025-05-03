@@ -6,7 +6,7 @@ Lightweight rust indexer to create a rocksdb index of bitcoin address -> pubkey 
 
 ```rust
 [u8]("block_tip") -> u32
-[u8, 33](utxo id [[u8, 32],u8]) -> [u8, unsized] address bytes (str) (!! utxos are deleted from rocksdb after being used to save space)
+[u8, 36](utxo id [[u8, 32],u32]) -> [u8, unsized] address bytes (str) (!! utxos are deleted from rocksdb after being used to save space)
 [u8, unsized](address bytes, utf-encoded) -> [u8, 33]
 [u8, unsized](address bytes, utf-encoded) -> [u8, 33]
 ```

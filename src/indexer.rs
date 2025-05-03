@@ -1,13 +1,13 @@
 use crate::chain;
 use crate::config::BitcoinRpcConfig;
-use crate::db;
+use crate::db::{self, StoredBlockHash, IndexerTipState};
 use bitcoincore_rpc::{Auth, Client, RpcApi, Error as BitcoinRpcError, jsonrpc};
 use colored::Colorize;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use ctrlc;
-use bitcoin::Address;
+use bitcoin::{Address, OutPoint, BlockHash};
 //[u8]("block_tip") -> u32
 //[u8, 33](utxo id) -> [u8, unsized] address bytes (str) (!! utxos are deleted after being used)
 //[u8, unsized](address bytes, utf-encoded) -> [u8, 33]
@@ -88,13 +88,15 @@ impl RpcApi for RetryClient {
 
 pub struct IndexerState {
     chain_height: u32,
-    indexer_height: u32
+    indexer_height: u32,
+    indexer_tip_hash: BlockHash, // ← ADD THIS
+
 }
 
 pub fn get_indexer_state(rpc_client: &RetryClient) -> IndexerState{
 
     //db errors should always panic
-    let indexer_height = db::get_indexer_tip().unwrap_or_else(|err| {
+    let tip_state = db::get_indexer_tip().unwrap_or_else(|err| {
         eprintln!("{}: {}", "DB Error: Failed to get block tip".red().bold(), err);
         panic!()
     });
@@ -111,7 +113,7 @@ pub fn get_indexer_state(rpc_client: &RetryClient) -> IndexerState{
     
             });
 
-            IndexerState { chain_height: safe_chain_height, indexer_height }
+            IndexerState { chain_height: safe_chain_height, indexer_height: tip_state.indexer_height, indexer_tip_hash: tip_state.indexer_tip_hash.0  }
         }
 
         Err(err) => {
@@ -149,6 +151,17 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
         panic!()
     }), shutdown };
 
+    let indexer_state = get_indexer_state(&rpc_client);
+
+    let expected_parent = indexer_state.indexer_tip_hash.to_string();
+    let actual_parent = RpcApi::get_block_hash(&rpc_client, indexer_state.indexer_height.into()).unwrap_or_else(|err|{
+        eprintln!("{}: {}", "An error ocurred getting block hash",err);
+        panic!()
+    }).to_string();
+
+    if expected_parent != actual_parent {
+        panic!("{}", "Reorg detected! Local DB is out of sync with node.".red().bold());
+    }
 
     loop {
 
@@ -161,7 +174,8 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
             indexer_state.chain_height
         );
 
-        for height in 832000..indexer_state.chain_height {
+        for height in indexer_state.indexer_height..indexer_state.chain_height {
+            
             let block_hash = RpcApi::get_block_hash(&rpc_client, height.into()).unwrap_or_else(|err|{
                 eprintln!("{}: {}", "An error ocurred getting block hash",err);
                 panic!()
@@ -172,20 +186,49 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
                 panic!()
             });
             
-            println!("{}: # {}", "[INDEXER] Processing block".blue().bold(), height);
+            println!("{}: #{}", "[INDEXER] Processing block".blue().bold(), height);
 
             for transaction in block.txdata {
 
-                for vout in transaction.output{
+
+                //save new utxos
+                for vout_index in 0..transaction.output.len(){
+                    let vout = &transaction.output[vout_index];
                     let address = match Address::from_script(&vout.script_pubkey, chain::ENABLED_NETWORK) {
                         Ok(address) => address,
                         Err(_) => continue
                     };
-                    println!("{}: {}", "Found address", address.to_string());
+                    
+                    let outpoint: OutPoint = OutPoint { 
+                        txid: transaction.compute_txid(), 
+                        vout: vout_index.try_into().expect(&"failed to parse vout index into u32".red().bold()) 
+                    };
 
+                    match db::save_utxo_address_mapping(outpoint, address) {
+                        Ok(()) => continue,
+                        Err(err) => {
+                            eprintln!("{}: {}", "An error ocurred saving utxo".red().bold(),err);
+                            panic!()
+                        }
+                    }
                 }
+
+                //save mappings
+
+                for vin in transaction.input {
+                    //let utxo = db::
+                }
+
+                
             }
 
+            match db::save_new_indexer_tip(&IndexerTipState { indexer_height: height, indexer_tip_hash: StoredBlockHash(block_hash) }) {
+                Ok(()) => continue,
+                Err(err) => {
+                    eprintln!("{}: {}", "An error ocurred while saving indexer height".red().bold(),err);
+                    panic!()
+                }
+            }
 
         }
     
