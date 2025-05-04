@@ -1,4 +1,6 @@
-use crate::db::{get_aliases_from_pubkey, get_indexer_tip, IndexerTipStateSerializable};
+use crate::db::{
+    get_aliases_from_address, get_aliases_from_pubkey, get_indexer_tip, IndexerTipStateSerializable,
+};
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -53,12 +55,12 @@ async fn indexer_state() -> impl Responder {
 }
 
 #[derive(Deserialize)]
-pub struct PubkeyRequest {
+pub struct PubkeyAliasRequest {
     pub pubkey: String, // hex-encoded
 }
 #[post("/aliases/single-pubkey")]
-async fn get_aliases(pubkey_req: web::Json<PubkeyRequest>) -> impl Responder {
-    let pubkey_hex = &pubkey_req.pubkey;
+async fn get_aliases_pubkey(req: web::Json<PubkeyAliasRequest>) -> impl Responder {
+    let pubkey_hex = &req.pubkey;
 
     // Try to decode hex into bytes
     let pubkey_bytes = match hex::decode(pubkey_hex) {
@@ -71,17 +73,36 @@ async fn get_aliases(pubkey_req: web::Json<PubkeyRequest>) -> impl Responder {
     };
 
     // Get aliases
-    match get_aliases_from_pubkey(&pubkey_bytes) {
+    HttpResponse::Ok().json(get_aliases_from_pubkey(&pubkey_bytes))
+}
+
+#[derive(Deserialize)]
+pub struct AddressAliasRequest {
+    pub address: String, // hex-encoded
+}
+#[post("/aliases/address")]
+async fn get_aliases_address(req: web::Json<AddressAliasRequest>) -> impl Responder {
+    let address = &req.address;
+
+    // Try to decode hex into bytes
+    match get_aliases_from_address(address) {
         Some(alias_response) => HttpResponse::Ok().json(alias_response),
-        None => HttpResponse::NotFound().json(ApiJsonError {
-            message: "No alias mapping found".to_string(),
-        }),
+        None => {
+            return HttpResponse::BadRequest().json(ApiJsonError {
+                message: format!("No aliases found for address: {}", address),
+            });
+        }
     }
 }
 
 pub async fn start_api_server(ip: &str, port: &u16) -> Result<(), ApiError> {
-    let server = HttpServer::new(|| App::new().service(indexer_state).service(get_aliases))
-        .bind(SocketAddrV4::new(ip.parse()?, *port))?;
+    let server = HttpServer::new(|| {
+        App::new()
+            .service(indexer_state)
+            .service(get_aliases_pubkey)
+            .service(get_aliases_address)
+    })
+    .bind(SocketAddrV4::new(ip.parse()?, *port))?;
 
     println!("API server started successfully on {}:{}", ip, port);
 

@@ -1,4 +1,3 @@
-use crate::chain::ENABLED_NETWORK;
 use crate::config::BitcoinRpcConfig;
 use crate::db::{self, get_utxo_db_key, IndexerTipState, StoredBlockHash};
 use bitcoin::hashes::Hash;
@@ -11,7 +10,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use ctrlc;
-use bitcoin::{Address, BlockHash, OutPoint, ScriptBuf, TxIn, script::Instruction, secp256k1::XOnlyPublicKey, secp256k1::hashes::hash160};
+use bitcoin::{XOnlyPublicKey, BlockHash, OutPoint, ScriptBuf, TxIn, script::Instruction, secp256k1::hashes::hash160};
 //[u8]("block_tip") -> u32
 //[u8, 33](utxo id) -> [u8, unsized] address bytes (str) (!! utxos are deleted after being used)
 //[u8, unsized](address bytes, utf-encoded) -> [u8, 33]
@@ -139,9 +138,9 @@ pub fn get_indexer_state(rpc_client: &RetryClient) -> IndexerState{
 #[derive(Debug, Clone, PartialEq)]
 pub enum IndexerAddressType {
     P2TR = 1,
-    P2SHP2WPKH = 2,
-    P2PKH = 3,
-    P2PK   = 4,
+    P2WPKH = 2,
+    P2SHP2WPKH = 3,
+    P2PKH = 4,
 
 }
 impl TryFrom<u8> for IndexerAddressType {
@@ -152,7 +151,6 @@ impl TryFrom<u8> for IndexerAddressType {
             1 => Ok(IndexerAddressType::P2TR),
             2 => Ok(IndexerAddressType::P2SHP2WPKH),
             3 => Ok(IndexerAddressType::P2PKH),
-            4 => Ok(IndexerAddressType::P2PK),
             _ => Err(()),
         }
     }
@@ -231,21 +229,6 @@ pub fn get_pub_key(
         }
     }
 
-    if fund_script.is_p2pk() {
-        // First instruction must be <pubkey>
-        let mut iter = fund_script.instructions();
-    
-        if let Some(Ok(Instruction::PushBytes(pk_bytes))) = iter.next() {
-    
-            return Some(DecodedScript {
-                pubkey: pk_bytes.as_bytes().to_vec(),
-                address_type: IndexerAddressType::P2PK,
-            });
-        }
-    }
-
-
-    
 
     None
 }
@@ -285,7 +268,7 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
 
     if expected_parent != actual_parent {
         eprintln!("{}, expected parent: {}, got: {}", "Reorg detected! Local DB is out of sync with node.".red().bold(), expected_parent, actual_parent);
-        panic!();
+        //panic!();
     }
 
     loop {
@@ -300,7 +283,7 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
         );
 
 
-        for height in indexer_state.indexer_height..indexer_state.chain_height {
+        for height in 720000..indexer_state.chain_height {
 
             let mut new_utxo_mappings = 0;
 
@@ -356,41 +339,19 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
                     None => continue
                 };
 
-                let fund_script =  ScriptBuf::from_bytes(fund_script_bytes.to_vec());
                 
                 let decoded_script = match get_pub_key(fund_script_bytes, &vin.script_sig, &vin.witness) {
                     Some(decoded_script) => decoded_script,
                     None => continue,
                 };
                 
-                let address: String;
-                
-                if decoded_script.address_type == IndexerAddressType::P2PK {
-                    // For P2PK, use hex-encoded pubkey as the "address"
-                    address = hex::encode(&decoded_script.pubkey);
-                } else {
-                    address = match Address::from_script(&fund_script, ENABLED_NETWORK) {
-                        Ok(addr) => addr.to_string(),
-                        Err(err) => {
-                            eprintln!(
-                                "{}: {}",
-                                "Failed to convert fund script from DB to address".red().bold(),
-                                err
-                            );
-                            panic!();
-                        }
-                    };
-                }
-                
-                println!("Debug: {}", hex::encode(&decoded_script.pubkey).yellow().bold());
 
-
-                if let Err(err) = db::save_decoded_script_mapping(&decoded_script, &address, &outpoint_key) {
+                if let Err(err) = db::save_decoded_script_mapping(&decoded_script.pubkey, &outpoint_key) {
                     eprintln!("{}: {}", "Failed to save decoded script mapping".red().bold(), err);
                     panic!();
                 }
                 
-                new_pmap_mappings += 1;
+                new_pmap_mappings += 4;
             };
 
             println!("{}: #{}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed block".blue().bold(), height, &block.txdata.len(), new_pmap_mappings, new_utxo_mappings);

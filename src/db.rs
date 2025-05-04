@@ -1,8 +1,10 @@
-use crate::chain::GENESIS_HASH;
-use crate::indexer::{DecodedScript, IndexerAddressType};
+use crate::chain::{ENABLED_NETWORK_HRP, ENABLED_NETWORK_KIND, GENESIS_HASH};
 use crate::state;
 use bitcoin::hashes::Hash;
-use bitcoin::{BlockHash, OutPoint, ScriptBuf, TxIn};
+use bitcoin::{
+    secp256k1, Address, BlockHash, CompressedPublicKey, OutPoint, PublicKey, ScriptBuf, TxIn,
+    XOnlyPublicKey,
+};
 use colored::Colorize;
 use rocksdb::{Options, DB};
 use serde::{Deserialize, Serialize};
@@ -10,8 +12,6 @@ use std::array::TryFromSliceError;
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
-
-const SEPARATOR_BYTE: u8 = 0x0A;
 
 #[derive(Debug)]
 pub enum DBError {
@@ -76,11 +76,11 @@ pub struct UTXO {
     pub outpoint: OutPoint,
 }
 #[derive(Serialize, Deserialize)]
-pub struct DecodedAddressMapping {
-    p2tr: Option<String>,
-    p2shp2wpkh: Option<String>,
-    p2pkh: Option<String>,
-    p2pk: Option<String>,
+pub struct AddressMapping {
+    p2tr: String,
+    p2wpkh: String,
+    p2shp2wpkh: String,
+    p2pkh: String,
 }
 
 #[derive(Debug)]
@@ -88,86 +88,6 @@ pub enum AddressDecodeError {
     InvalidUtf8(&'static str),
     MalformedSeparator,
     InvalidAddressType,
-}
-
-fn try_utf8(
-    buf: Option<Vec<u8>>,
-    label: &'static str,
-) -> Result<Option<String>, AddressDecodeError> {
-    match buf {
-        Some(b) => String::from_utf8(b)
-            .map(Some)
-            .map_err(|_| AddressDecodeError::InvalidUtf8(label)),
-        None => Ok(None),
-    }
-}
-
-impl TryFrom<Vec<u8>> for DecodedAddressMapping {
-    type Error = AddressDecodeError;
-
-    fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
-        let mut p2tr_buffer: Option<Vec<u8>> = None;
-        let mut p2shp2wpkh_buffer: Option<Vec<u8>> = None;
-        let mut p2pkh_buffer: Option<Vec<u8>> = None;
-        let mut p2pk_buffer: Option<Vec<u8>> = None;
-
-        let mut current_buffer: Option<&mut Vec<u8>> = None;
-
-        let mut i = 0;
-        while i < bytes.len() {
-            let byte = bytes[i];
-
-            if byte == SEPARATOR_BYTE {
-                if i + 1 >= bytes.len() {
-                    return Err(AddressDecodeError::MalformedSeparator);
-                }
-
-                let Ok(address_type) = bytes[i + 1].try_into() else {
-                    return Err(AddressDecodeError::InvalidAddressType);
-                };
-
-                match address_type {
-                    IndexerAddressType::P2TR => {
-                        p2tr_buffer = Some(vec![]);
-                        current_buffer = p2tr_buffer.as_mut();
-                    }
-                    IndexerAddressType::P2SHP2WPKH => {
-                        p2shp2wpkh_buffer = Some(vec![]);
-                        current_buffer = p2shp2wpkh_buffer.as_mut();
-                    }
-                    IndexerAddressType::P2PKH => {
-                        p2pkh_buffer = Some(vec![]);
-                        current_buffer = p2pkh_buffer.as_mut();
-                    }
-                    IndexerAddressType::P2PK => {
-                        p2pk_buffer = Some(vec![]);
-                        current_buffer = p2pk_buffer.as_mut();
-                    }
-                }
-
-                i += 2;
-                continue;
-            }
-
-            if let Some(buf) = current_buffer.as_mut() {
-                buf.push(byte);
-            }
-
-            i += 1;
-        }
-
-        let p2tr = try_utf8(p2tr_buffer, "p2tr")?;
-        let p2shp2wpkh = try_utf8(p2shp2wpkh_buffer, "p2shp2wpkh")?;
-        let p2pkh = try_utf8(p2pkh_buffer, "p2pkh")?;
-        let p2pk = try_utf8(p2pk_buffer, "p2pk")?;
-
-        Ok(DecodedAddressMapping {
-            p2tr,
-            p2shp2wpkh,
-            p2pkh,
-            p2pk,
-        })
-    }
 }
 
 impl From<UTXO> for [u8; 36] {
@@ -197,15 +117,6 @@ pub fn get_utxo_db_key(utxo: OutPoint) -> Vec<u8> {
     let bytes: [u8; 36] = (UTXO { outpoint: utxo }).into();
 
     get_utxo_db_key_from_bytes(&bytes.to_vec())
-}
-
-//publicKey -> addressMap key
-pub fn get_pmap_db_key(pubkey: &Vec<u8>) -> Vec<u8> {
-    let db_key_slice = b"pmap: ";
-    let mut map_key = Vec::with_capacity(db_key_slice.len() + pubkey.len());
-    map_key.extend_from_slice(db_key_slice);
-    map_key.extend_from_slice(&pubkey);
-    map_key
 }
 
 //address -> publicKey
@@ -367,85 +278,98 @@ pub fn bulk_get_utxo_script_mappings(vins: &Vec<&TxIn>) -> HashMap<Vec<u8>, Vec<
     utxo_script_map
 }
 
-pub struct AddressMapping {
-    pub decoded: DecodedAddressMapping,
-    pub bytes: Vec<u8>,
+pub fn create_p2sh_p2wpkh(p2wpkh_address: &Address) -> String {
+    let redeem_script = p2wpkh_address.script_pubkey();
+
+    Address::p2sh(&redeem_script, *ENABLED_NETWORK_KIND)
+        .expect(&"Failed to get p2sh_p2wpkh from pubkey".red().bold())
+        .to_string()
 }
 
-pub fn get_address_mapping_from_pubkey(pubkey: &Vec<u8>) -> Option<AddressMapping> {
-    let db = state::get();
-    let map_key = get_pmap_db_key(pubkey);
+pub fn get_address_mapping_from_pubkey(pubkey_bytes: &Vec<u8>) -> Option<AddressMapping> {
+    //Were trying to pass in a p2pk, which we cant parse
+    if pubkey_bytes.len() != 33 {
+        return None;
+    }
 
-    let db_response = match db.get(map_key) {
-        Ok(Some(bytes)) => bytes,
-        Ok(None) => {
-            return None.into();
-        }
-        Err(err) => {
-            eprintln!("{}: {}", "Failed to get pmap from DB".red().bold(), err);
-            panic!();
-        }
-    };
+    let secp = secp256k1::Secp256k1::verification_only();
 
-    let Ok(decoded) = db_response.clone().try_into() else {
+    // 1. Parse the 33‑byte compressed key (0x02/0x03 prefix).
+    let public_key = PublicKey::from_slice(pubkey_bytes).expect(
+        &"public_key slice errpr: expected 33‑byte compressed pubkey"
+            .red()
+            .bold(),
+    );
+
+    let compressed_pk: CompressedPublicKey = public_key.try_into().unwrap_or_else(|err| {
         eprintln!(
-            "{}",
-            "Failed to get pmap from DB: decode error".red().bold()
+            "{}: {}",
+            "Unexpected failure: compressed already, so try_into() must succeed"
+                .red()
+                .bold(),
+            err
         );
         panic!();
-    };
+    });
+
+    let xonly = XOnlyPublicKey::from_slice(&pubkey_bytes[1..])
+        .expect(&"x only slice error: valid x‑only key".red().bold());
+
+    let p2pkh = Address::p2pkh(&public_key, *ENABLED_NETWORK_KIND).to_string();
+    let p2wpkh = Address::p2wpkh(&compressed_pk, *ENABLED_NETWORK_HRP);
+    let p2shp2wpkh = create_p2sh_p2wpkh(&p2wpkh);
+    let p2tr = Address::p2tr(&secp, xonly, None, *ENABLED_NETWORK_HRP).to_string();
 
     Some(AddressMapping {
-        decoded,
-        bytes: db_response,
+        p2pkh,
+        p2wpkh: p2wpkh.to_string(),
+        p2shp2wpkh,
+        p2tr,
     })
 }
 
 //pubkey:{pubkey bytes}:{address mapping} ====> address mapping: 0x0a as seperator, first byte is u8 and defines addr type for parser. ex: [u8, [u8,unsized]]0x0a[u8, [u8,unsized]]
 //address:{address utf8 bytes}:{pubkey}
 pub fn save_decoded_script_mapping(
-    decoded_script: &DecodedScript,
-    address: &String,
+    pubkey: &Vec<u8>,
     delete_outpoint: &Vec<u8>, //we free up disk storage by deleting utxo mappings once they are used.
 ) -> Result<(), DBError> {
     let db = state::get();
 
-    let address_mapping = get_address_mapping_from_pubkey(&decoded_script.pubkey);
-
-    let is_modify: bool = match &address_mapping {
-        Some(address_mapping) => {
-            let decoded_mapping = &address_mapping.decoded;
-
-            match &decoded_script.address_type {
-                IndexerAddressType::P2PKH => decoded_mapping.p2pkh.is_none(),
-                IndexerAddressType::P2SHP2WPKH => decoded_mapping.p2shp2wpkh.is_none(),
-                IndexerAddressType::P2TR => decoded_mapping.p2tr.is_none(),
-                IndexerAddressType::P2PK => decoded_mapping.p2pk.is_none(),
-            }
-        }
-        None => true,
+    let Some(address_map) = get_address_mapping_from_pubkey(pubkey) else {
+        let utxo_key = get_utxo_db_key_from_bytes(delete_outpoint);
+        db.delete(utxo_key)?;
+        return Ok(());
     };
 
-    let prefix_bytes: &[u8] = address_mapping
-        .as_ref()
-        .map(|a| a.bytes.as_slice())
-        .unwrap_or(&[]);
+    let search_keys = vec![
+        address_map.p2tr,
+        address_map.p2pkh,
+        address_map.p2shp2wpkh,
+        address_map.p2wpkh,
+    ]
+    .into_iter()
+    .map(|key| get_amap_db_key(&key));
 
-    if is_modify {
-        let mut new_bytes: Vec<u8> =
-            vec![SEPARATOR_BYTE, decoded_script.address_type.clone() as u8];
-        new_bytes.extend_from_slice(address.as_bytes());
+    let db_response = db.multi_get(search_keys.clone());
 
-        let pmap_key = get_pmap_db_key(&decoded_script.pubkey);
-        let mut new_value = Vec::with_capacity(prefix_bytes.len() + new_bytes.len());
-        new_value.extend_from_slice(&prefix_bytes);
-        new_value.extend_from_slice(&new_bytes);
-
-        db.put(&pmap_key, &new_value)?;
-
-        let amap_key = get_amap_db_key(address);
-
-        db.put(&amap_key, &decoded_script.pubkey)?;
+    for (search_key, result) in search_keys.zip(db_response) {
+        match result {
+            Ok(Some(_)) => continue,
+            Ok(None) => {
+                db.put(search_key, &pubkey)?;
+            }
+            Err(err) => {
+                eprintln!(
+                    "{}: {}",
+                    "Failed to get byte array in utxo_script_mappings from DB: "
+                        .red()
+                        .bold(),
+                    err
+                );
+                panic!();
+            }
+        };
     }
 
     let utxo_key = get_utxo_db_key_from_bytes(delete_outpoint);
@@ -457,13 +381,29 @@ pub fn save_decoded_script_mapping(
 #[derive(Serialize, Deserialize)]
 pub struct AliasResponse {
     pub pubkey: String,
-    pub aliases: DecodedAddressMapping,
+    pub aliases: Option<AddressMapping>,
 }
 
-pub fn get_aliases_from_pubkey(pubkey: &Vec<u8>) -> Option<AliasResponse> {
-    let decoded_address_mapping = get_address_mapping_from_pubkey(pubkey)?;
-    Some(AliasResponse {
+pub fn get_aliases_from_pubkey(pubkey: &Vec<u8>) -> AliasResponse {
+    let address_mapping = get_address_mapping_from_pubkey(pubkey);
+    AliasResponse {
         pubkey: hex::encode(pubkey),
-        aliases: decoded_address_mapping.decoded,
-    })
+        aliases: address_mapping,
+    }
+}
+
+pub fn get_aliases_from_address(address: &String) -> Option<AliasResponse> {
+    let db = state::get();
+
+    match db.get(get_amap_db_key(address)) {
+        Ok(Some(pubkey)) => Some(get_aliases_from_pubkey(&pubkey)),
+        Ok(None) => None,
+        Err(err) => {
+            println!(
+                "{}: {}",
+                "WARN: An error ocurred while getting amap key", err
+            );
+            None
+        }
+    }
 }
