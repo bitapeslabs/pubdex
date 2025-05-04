@@ -1,13 +1,17 @@
-use crate::chain;
+use crate::chain::ENABLED_NETWORK;
 use crate::config::BitcoinRpcConfig;
-use crate::db::{self, StoredBlockHash, IndexerTipState};
+use crate::db::{self, get_utxo_db_key, IndexerTipState, StoredBlockHash};
+use bitcoin::hashes::Hash;
+use bitcoin::key::Parity;
+use bitcoin::{secp256k1, Witness};
 use bitcoincore_rpc::{Auth, Client, RpcApi, Error as BitcoinRpcError, jsonrpc};
 use colored::Colorize;
+use core::panic;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use ctrlc;
-use bitcoin::{Address, OutPoint, BlockHash};
+use bitcoin::{Address, BlockHash, OutPoint, ScriptBuf, TxIn, script::Instruction, secp256k1::XOnlyPublicKey, secp256k1::hashes::hash160};
 //[u8]("block_tip") -> u32
 //[u8, 33](utxo id) -> [u8, unsized] address bytes (str) (!! utxos are deleted after being used)
 //[u8, unsized](address bytes, utf-encoded) -> [u8, 33]
@@ -19,6 +23,7 @@ use bitcoin::{Address, OutPoint, BlockHash};
 #[derive(Debug)]
 pub enum IndexerError {
     BitcoinRpcError(BitcoinRpcError),
+    Secp256k1Error(secp256k1::Error)
 }
 
 impl From<BitcoinRpcError> for IndexerError {
@@ -27,10 +32,18 @@ impl From<BitcoinRpcError> for IndexerError {
     }
 }
 
+impl From<secp256k1::Error> for IndexerError {
+    fn from(err: secp256k1::Error) -> Self {
+        IndexerError::Secp256k1Error(err)
+    }
+}
+
 impl fmt::Display for IndexerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match self {
             IndexerError::BitcoinRpcError(err) => write!(formatter, "Bitcoin RPC Error: {}", err),
+            IndexerError::Secp256k1Error(err) => write!(formatter, "Secp256k1 Error: {}", err),
+
         }
     }
 }
@@ -122,9 +135,120 @@ pub fn get_indexer_state(rpc_client: &RetryClient) -> IndexerState{
         }
     }
 }
+#[repr(u8)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum IndexerAddressType {
+    P2TR = 1,
+    P2SHP2WPKH = 2,
+    P2PKH = 3,
+    P2PK   = 4,
+
+}
+impl TryFrom<u8> for IndexerAddressType {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(IndexerAddressType::P2TR),
+            2 => Ok(IndexerAddressType::P2SHP2WPKH),
+            3 => Ok(IndexerAddressType::P2PKH),
+            4 => Ok(IndexerAddressType::P2PK),
+            _ => Err(()),
+        }
+    }
+}
 
 
 
+pub struct DecodedScript {
+    pub pubkey: Vec<u8>,
+    pub address_type: IndexerAddressType
+}
+
+pub fn get_pub_key(
+    fund_script_bytes: &Vec<u8>,
+    spend_script: &ScriptBuf,
+    witness: &Witness,
+) -> Option<DecodedScript> {
+    let fund_script = ScriptBuf::from_bytes(fund_script_bytes.clone());
+
+    // ── Taproot (P2TR) ───────────────────────────────────────────────
+    if fund_script.is_p2tr() && fund_script.len() == 34 {
+        let xonly_bytes = &fund_script.as_bytes()[2..34];
+        if let Ok(xonly) = XOnlyPublicKey::from_slice(xonly_bytes) {
+            return Some(
+                DecodedScript { pubkey: xonly.public_key(Parity::Even).serialize().to_vec(), address_type: IndexerAddressType::P2TR });
+        }
+    }
+
+    // ── Native SegWit v0 P2WPKH ─────────────────────────────────────
+    if fund_script.is_p2wpkh() {
+        if witness.len() >= 2 {
+            let pk_bytes = &witness[1];
+            // sanity‑check: hash160(pubkey) must match program
+            let h160 = hash160::Hash::hash(pk_bytes);
+            if fund_script.as_bytes()[2..22] == h160[..] {
+                return Some(DecodedScript { pubkey: pk_bytes.to_vec(), address_type: IndexerAddressType::P2SHP2WPKH });
+            }
+        }
+    }
+
+    // ── Legacy P2PKH ────────────────────────────────────────────────
+    if fund_script.is_p2pkh() {
+        let mut pushes = spend_script.instructions().filter_map(|i| {
+            if let Ok(Instruction::PushBytes(b)) = i { Some(b) } else { None }
+        });
+
+        pushes.next(); // skip signature
+
+        if let Some(pk_bytes) = pushes.next() {
+            if (pk_bytes.len() == 33 && (pk_bytes[0] == 0x02 || pk_bytes[0] == 0x03))
+               || (pk_bytes.len() == 65 && pk_bytes[0] == 0x04)
+            {
+                return Some(DecodedScript { pubkey: pk_bytes.as_bytes().to_vec(), address_type: IndexerAddressType::P2PKH });
+            }
+        }
+    }
+
+    // ── P2SH ▸ P2WPKH (nested SegWit) ──────────────────────────────
+    if fund_script.is_p2sh() {
+        // redeem‑script = last push in scriptSig
+        let redeem_script_bytes = spend_script.instructions().filter_map(|i| match i {
+            Ok(Instruction::PushBytes(b)) => Some(b),
+            _ => None,
+        }).last();
+
+        if let Some(redeem) = redeem_script_bytes {
+            let redeem_script = ScriptBuf::from_bytes(redeem.as_bytes().to_vec());
+            if redeem_script.is_p2wpkh() && witness.len() >= 2 {
+                let pk_bytes = &witness[1];
+                // cross‑check hash160
+                let h160 = hash160::Hash::hash(pk_bytes);
+                if redeem_script.as_bytes()[2..22] == h160[..] {
+                    return Some(DecodedScript { pubkey: pk_bytes.to_vec(), address_type: IndexerAddressType::P2SHP2WPKH });
+                }
+            }
+        }
+    }
+
+    if fund_script.is_p2pk() {
+        // First instruction must be <pubkey>
+        let mut iter = fund_script.instructions();
+    
+        if let Some(Ok(Instruction::PushBytes(pk_bytes))) = iter.next() {
+    
+            return Some(DecodedScript {
+                pubkey: pk_bytes.as_bytes().to_vec(),
+                address_type: IndexerAddressType::P2PK,
+            });
+        }
+    }
+
+
+    
+
+    None
+}
 pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -160,7 +284,8 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
     }).to_string();
 
     if expected_parent != actual_parent {
-        panic!("{}", "Reorg detected! Local DB is out of sync with node.".red().bold());
+        eprintln!("{}, expected parent: {}, got: {}", "Reorg detected! Local DB is out of sync with node.".red().bold(), expected_parent, actual_parent);
+        panic!();
     }
 
     loop {
@@ -174,7 +299,11 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
             indexer_state.chain_height
         );
 
+
         for height in indexer_state.indexer_height..indexer_state.chain_height {
+
+            let mut new_utxo_mappings = 0;
+
             
             let block_hash = RpcApi::get_block_hash(&rpc_client, height.into()).unwrap_or_else(|err|{
                 eprintln!("{}: {}", "An error ocurred getting block hash",err);
@@ -186,41 +315,86 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
                 panic!()
             });
             
-            println!("{}: #{}", "[INDEXER] Processing block".blue().bold(), height);
-
-            for transaction in block.txdata {
+            for transaction in &block.txdata {
 
 
                 //save new utxos
                 for vout_index in 0..transaction.output.len(){
                     let vout = &transaction.output[vout_index];
-                    let address = match Address::from_script(&vout.script_pubkey, chain::ENABLED_NETWORK) {
-                        Ok(address) => address,
-                        Err(_) => continue
-                    };
-                    
+
                     let outpoint: OutPoint = OutPoint { 
                         txid: transaction.compute_txid(), 
                         vout: vout_index.try_into().expect(&"failed to parse vout index into u32".red().bold()) 
                     };
 
-                    match db::save_utxo_address_mapping(outpoint, address) {
+                    new_utxo_mappings += 1;
+
+                    match db::save_utxo_script_mapping(outpoint, &vout.script_pubkey) {
                         Ok(()) => continue,
                         Err(err) => {
                             eprintln!("{}: {}", "An error ocurred saving utxo".red().bold(),err);
                             panic!()
                         }
-                    }
+                    };
+
                 }
-
-                //save mappings
-
-                for vin in transaction.input {
-                    //let utxo = db::
-                }
-
                 
             }
+
+
+            //save mappings
+            let vins: Vec<&TxIn> = (&block.txdata).iter().map(|tx|&tx.input).flatten().collect();
+            let utxo_address_map = db::bulk_get_utxo_script_mappings(&vins);
+            let mut new_pmap_mappings = 0;
+
+
+            for vin in vins {
+                let outpoint_key = get_utxo_db_key(vin.previous_output);
+
+                let fund_script_bytes = match utxo_address_map.get(&outpoint_key){
+                    Some(script) => script,
+                    None => continue
+                };
+
+                let fund_script =  ScriptBuf::from_bytes(fund_script_bytes.to_vec());
+                
+                let decoded_script = match get_pub_key(fund_script_bytes, &vin.script_sig, &vin.witness) {
+                    Some(decoded_script) => decoded_script,
+                    None => continue,
+                };
+                
+                let address: String;
+                
+                if decoded_script.address_type == IndexerAddressType::P2PK {
+                    // For P2PK, use hex-encoded pubkey as the "address"
+                    address = hex::encode(&decoded_script.pubkey);
+                } else {
+                    address = match Address::from_script(&fund_script, ENABLED_NETWORK) {
+                        Ok(addr) => addr.to_string(),
+                        Err(err) => {
+                            eprintln!(
+                                "{}: {}",
+                                "Failed to convert fund script from DB to address".red().bold(),
+                                err
+                            );
+                            panic!();
+                        }
+                    };
+                }
+                
+                println!("Debug: {}", hex::encode(&decoded_script.pubkey).yellow().bold());
+
+
+                if let Err(err) = db::save_decoded_script_mapping(&decoded_script, &address, &outpoint_key) {
+                    eprintln!("{}: {}", "Failed to save decoded script mapping".red().bold(), err);
+                    panic!();
+                }
+                
+                new_pmap_mappings += 1;
+            };
+
+            println!("{}: #{}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed block".blue().bold(), height, &block.txdata.len(), new_pmap_mappings, new_utxo_mappings);
+
 
             match db::save_new_indexer_tip(&IndexerTipState { indexer_height: height, indexer_tip_hash: StoredBlockHash(block_hash) }) {
                 Ok(()) => continue,
@@ -228,7 +402,9 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
                     eprintln!("{}: {}", "An error ocurred while saving indexer height".red().bold(),err);
                     panic!()
                 }
-            }
+            };
+
+
 
         }
     

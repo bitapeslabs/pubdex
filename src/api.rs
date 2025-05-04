@@ -1,5 +1,5 @@
-use crate::db::{get_indexer_tip, IndexerTipStateSerializable};
-use actix_web::{get, App, HttpResponse, HttpServer, Responder};
+use crate::db::{get_aliases_from_pubkey, get_indexer_tip, IndexerTipStateSerializable};
+use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::{AddrParseError, SocketAddrV4};
@@ -51,8 +51,36 @@ async fn indexer_state() -> impl Responder {
         }
     }
 }
+
+#[derive(Deserialize)]
+pub struct PubkeyRequest {
+    pub pubkey: String, // hex-encoded
+}
+#[post("/aliases/single-pubkey")]
+async fn get_aliases(pubkey_req: web::Json<PubkeyRequest>) -> impl Responder {
+    let pubkey_hex = &pubkey_req.pubkey;
+
+    // Try to decode hex into bytes
+    let pubkey_bytes = match hex::decode(pubkey_hex) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(ApiJsonError {
+                message: format!("Invalid hex in pubkey: {}", e),
+            });
+        }
+    };
+
+    // Get aliases
+    match get_aliases_from_pubkey(&pubkey_bytes) {
+        Some(alias_response) => HttpResponse::Ok().json(alias_response),
+        None => HttpResponse::NotFound().json(ApiJsonError {
+            message: "No alias mapping found".to_string(),
+        }),
+    }
+}
+
 pub async fn start_api_server(ip: &str, port: &u16) -> Result<(), ApiError> {
-    let server = HttpServer::new(|| App::new().service(indexer_state))
+    let server = HttpServer::new(|| App::new().service(indexer_state).service(get_aliases))
         .bind(SocketAddrV4::new(ip.parse()?, *port))?;
 
     println!("API server started successfully on {}:{}", ip, port);
