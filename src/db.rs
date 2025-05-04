@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
-
+thread_local! {
+    pub static SECP: secp256k1::Secp256k1<secp256k1::VerifyOnly> = secp256k1::Secp256k1::verification_only();
+}
 #[derive(Debug)]
 pub enum DBError {
     SliceConversion(TryFromSliceError),
@@ -431,8 +433,6 @@ pub fn get_address_mapping_from_pubkey(pubkey_bytes: &Vec<u8>) -> Option<Address
         return None;
     }
 
-    let secp = secp256k1::Secp256k1::verification_only();
-
     // 1. Parse the 33‑byte compressed key (0x02/0x03 prefix).
     let public_key = PublicKey::from_slice(pubkey_bytes).expect(
         &"public_key slice errpr: expected 33‑byte compressed pubkey"
@@ -457,8 +457,7 @@ pub fn get_address_mapping_from_pubkey(pubkey_bytes: &Vec<u8>) -> Option<Address
     let p2pkh = Address::p2pkh(&public_key, *ENABLED_NETWORK_KIND).to_string();
     let p2wpkh = Address::p2wpkh(&compressed_pk, *ENABLED_NETWORK_HRP);
     let p2shp2wpkh = create_p2sh_p2wpkh(&p2wpkh);
-    let p2tr = Address::p2tr(&secp, xonly, None, *ENABLED_NETWORK_HRP).to_string();
-
+    let p2tr = SECP.with(|secp| Address::p2tr(secp, xonly, None, *ENABLED_NETWORK_HRP).to_string());
     Some(AddressMapping {
         p2pkh,
         p2wpkh: p2wpkh.to_string(),
