@@ -1,5 +1,6 @@
 use crate::config::BitcoinRpcConfig;
-use crate::db::{self, get_utxo_db_key, IndexerTipState, StoredBlockHash};
+use crate::db::{self, get_utxo_db_key, BatchManager, DBHandle, IndexerTipState, StoredBlockHash, WriteBatchWithCache};
+use crate::state;
 use bitcoin::hashes::Hash;
 use bitcoin::key::Parity;
 use bitcoin::{secp256k1, Witness};
@@ -24,6 +25,8 @@ pub enum IndexerError {
     BitcoinRpcError(BitcoinRpcError),
     Secp256k1Error(secp256k1::Error)
 }
+
+
 
 impl From<BitcoinRpcError> for IndexerError {
     fn from(err: BitcoinRpcError) -> Self {
@@ -105,10 +108,10 @@ pub struct IndexerState {
 
 }
 
-pub fn get_indexer_state(rpc_client: &RetryClient) -> IndexerState{
+pub fn get_indexer_state(db_handle: &DBHandle, rpc_client: &RetryClient) -> IndexerState{
 
     //db errors should always panic
-    let tip_state = db::get_indexer_tip().unwrap_or_else(|err| {
+    let tip_state = db::get_indexer_tip(db_handle).unwrap_or_else(|err| {
         eprintln!("{}: {}", "DB Error: Failed to get block tip".red().bold(), err);
         panic!()
     });
@@ -232,7 +235,13 @@ pub fn get_pub_key(
 
     None
 }
+
+pub static LOOP_INTERVAL: u64 = 1000;
+
+
 pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
+    let db = state::get();
+    let direct_db_handle = DBHandle::Direct(&db);
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_signal = shutdown.clone();
@@ -258,7 +267,8 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
         panic!()
     }), shutdown };
 
-    let indexer_state = get_indexer_state(&rpc_client);
+
+    let indexer_state = get_indexer_state(&direct_db_handle, &rpc_client);
 
     let expected_parent = indexer_state.indexer_tip_hash.to_string();
     let actual_parent = RpcApi::get_block_hash(&rpc_client, indexer_state.indexer_height.into()).unwrap_or_else(|err|{
@@ -271,9 +281,10 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
         panic!();
     }
 
+
     loop {
 
-        let indexer_state = get_indexer_state(&rpc_client);
+        let indexer_state = get_indexer_state(&direct_db_handle, &rpc_client);
 
         println!(
             "{}: {}/{}",
@@ -286,6 +297,10 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
         for height in indexer_state.indexer_height..indexer_state.chain_height {
 
             let mut new_utxo_mappings = 0;
+
+            //batch is managed by the indexer loop and propagated down
+            let mut batch = WriteBatchWithCache::new();
+            let mut db_handle: DBHandle = DBHandle::Staged(batch);
 
             
             let block_hash = RpcApi::get_block_hash(&rpc_client, height.into()).unwrap_or_else(|err|{
@@ -312,7 +327,7 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
 
                     new_utxo_mappings += 1;
 
-                    match db::save_utxo_script_mapping(outpoint, &vout.script_pubkey) {
+                    match db::save_utxo_script_mapping(&mut db_handle, outpoint, &vout.script_pubkey) {
                         Ok(()) => continue,
                         Err(err) => {
                             eprintln!("{}: {}", "An error ocurred saving utxo".red().bold(),err);
@@ -327,7 +342,7 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
 
             //save mappings
             let vins: Vec<&TxIn> = (&block.txdata).iter().map(|tx|&tx.input).flatten().collect();
-            let utxo_address_map = db::bulk_get_utxo_script_mappings(&vins);
+            let utxo_address_map = db::bulk_get_utxo_script_mappings(&db_handle, &vins);
             let mut new_pmap_mappings = 0;
 
 
@@ -346,7 +361,7 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
                 };
                 
 
-                if let Err(err) = db::save_decoded_script_mapping(&decoded_script.pubkey, &outpoint_key) {
+                if let Err(err) = db::save_decoded_script_mapping(&mut db_handle, &decoded_script.pubkey, &outpoint_key) {
                     eprintln!("{}: {}", "Failed to save decoded script mapping".red().bold(), err);
                     panic!();
                 }
@@ -357,7 +372,7 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
             println!("{}: #{}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed block".blue().bold(), height, &block.txdata.len(), new_pmap_mappings, new_utxo_mappings);
 
 
-            match db::save_new_indexer_tip(&IndexerTipState { indexer_height: height, indexer_tip_hash: StoredBlockHash(block_hash) }) {
+            match db::save_new_indexer_tip(&mut db_handle, &IndexerTipState { indexer_height: height, indexer_tip_hash: StoredBlockHash(block_hash) }) {
                 Ok(()) => continue,
                 Err(err) => {
                     eprintln!("{}: {}", "An error ocurred while saving indexer height".red().bold(),err);
@@ -368,7 +383,15 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
 
 
         }
-    
+        println!(
+            "{}{}{}",
+            "[INDEXER] Block chunk finished processing, waiting ".yellow(),
+            LOOP_INTERVAL.to_string().yellow(),
+            "ms before checking for new state".yellow()
+        );
+        ::std::thread::sleep(::std::time::Duration::from_millis(LOOP_INTERVAL));
+
+
     }
 
 }

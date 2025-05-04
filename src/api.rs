@@ -1,6 +1,8 @@
 use crate::db::{
-    get_aliases_from_address, get_aliases_from_pubkey, get_indexer_tip, IndexerTipStateSerializable,
+    get_aliases_from_address, get_aliases_from_pubkey, get_indexer_tip, DBHandle,
+    IndexerTipStateSerializable,
 };
+use crate::state;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -32,6 +34,10 @@ impl fmt::Display for ApiError {
         }
     }
 }
+// This struct represents state
+struct AppState<'a> {
+    db_handle: DBHandle<'a>,
+}
 
 impl std::error::Error for ApiError {}
 #[derive(Serialize, Deserialize)]
@@ -39,8 +45,8 @@ struct ApiJsonError {
     message: String,
 }
 #[get("/indexer-state")]
-async fn indexer_state() -> impl Responder {
-    match get_indexer_tip() {
+async fn indexer_state<'a>(data: web::Data<AppState<'a>>) -> impl Responder {
+    match get_indexer_tip(&data.db_handle) {
         Ok(result) => {
             let tip_state: IndexerTipStateSerializable = result.into();
             HttpResponse::Ok().json(tip_state)
@@ -81,11 +87,14 @@ pub struct AddressAliasRequest {
     pub address: String, // hex-encoded
 }
 #[post("/aliases/address")]
-async fn get_aliases_address(req: web::Json<AddressAliasRequest>) -> impl Responder {
+async fn get_aliases_address<'a>(
+    data: web::Data<AppState<'a>>,
+    req: web::Json<AddressAliasRequest>,
+) -> impl Responder {
     let address = &req.address;
 
     // Try to decode hex into bytes
-    match get_aliases_from_address(address) {
+    match get_aliases_from_address(&data.db_handle, address) {
         Some(alias_response) => HttpResponse::Ok().json(alias_response),
         None => {
             return HttpResponse::BadRequest().json(ApiJsonError {
@@ -96,8 +105,13 @@ async fn get_aliases_address(req: web::Json<AddressAliasRequest>) -> impl Respon
 }
 
 pub async fn start_api_server(ip: &str, port: &u16) -> Result<(), ApiError> {
+    let db = state::get();
+
     let server = HttpServer::new(|| {
         App::new()
+            .app_data(AppState {
+                db_handle: DBHandle::Direct(db),
+            })
             .service(indexer_state)
             .service(get_aliases_pubkey)
             .service(get_aliases_address)

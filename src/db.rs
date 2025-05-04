@@ -6,12 +6,13 @@ use bitcoin::{
     XOnlyPublicKey,
 };
 use colored::Colorize;
-use rocksdb::{Options, DB};
+use rocksdb::{Options, WriteBatch, DB};
 use serde::{Deserialize, Serialize};
 use std::array::TryFromSliceError;
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum DBError {
@@ -68,6 +69,135 @@ impl From<IndexerTipState> for IndexerTipStateSerializable {
         IndexerTipStateSerializable {
             indexer_height: tip_state.indexer_height,
             indexer_tip_hash: tip_state.indexer_tip_hash.0.to_string(),
+        }
+    }
+}
+
+pub struct WriteBatchWithCache {
+    pub write_batch: WriteBatch,
+    pub cache: HashMap<Vec<u8>, Vec<u8>>,
+}
+
+pub trait BatchManager {
+    fn new() -> Self;
+
+    fn into_inner(self) -> WriteBatch;
+
+    //cache getters never touch the disk
+    fn get_from_cache(&self, bytes: &Vec<u8>) -> Option<Vec<u8>>;
+    fn multi_get_from_cache(&self, keys: &Vec<Vec<u8>>) -> Vec<Option<Vec<u8>>>;
+
+    //writing to cache will always succeed since its an inmemory hashmap
+    fn put(&mut self, key: Vec<u8>, value: Vec<u8>);
+
+    fn delete(&mut self, key: &Vec<u8>);
+
+    //These will first search the cache of the WriteBatch, and, if not found, call the db
+    fn get_deep(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, rocksdb::Error>;
+
+    fn multi_get_deep(&self, keys: &Vec<Vec<u8>>) -> Vec<Result<Option<Vec<u8>>, rocksdb::Error>>;
+}
+
+impl BatchManager for WriteBatchWithCache {
+    fn new() -> Self {
+        WriteBatchWithCache {
+            write_batch: WriteBatch::default(),
+            cache: HashMap::new(),
+        }
+    }
+
+    fn into_inner(self) -> WriteBatch {
+        self.write_batch
+    }
+
+    fn get_from_cache(&self, key: &Vec<u8>) -> Option<Vec<u8>> {
+        self.cache.get(key).map(|result| result.clone())
+    }
+
+    fn multi_get_from_cache(&self, keys: &Vec<Vec<u8>>) -> Vec<Option<Vec<u8>>> {
+        keys.iter().map(|key| self.get_from_cache(key)).collect()
+    }
+
+    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.write_batch.put(&key, &value);
+        self.cache.insert(key, value);
+    }
+
+    fn delete(&mut self, key: &Vec<u8>) {
+        self.write_batch.delete(key);
+        self.cache.remove(key);
+    }
+
+    fn get_deep(&self, key: &Vec<u8>) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        match self.get_from_cache(key) {
+            Some(result) => Ok(Some(result)),
+            None => {
+                let db = state::get();
+                db.get(key)
+            }
+        }
+    }
+
+    fn multi_get_deep(&self, keys: &Vec<Vec<u8>>) -> Vec<Result<Option<Vec<u8>>, rocksdb::Error>> {
+        let db = state::get();
+        let mut results: HashMap<Vec<u8>, Result<Option<Vec<u8>>, rocksdb::Error>> = HashMap::new();
+        for (key, option_value) in keys.iter().zip(self.multi_get_from_cache(keys)) {
+            if let Some(value) = option_value {
+                results.insert(key.clone(), Ok(Some(value)));
+            }
+        }
+        let misses: Vec<&[u8]> = keys
+            .iter()
+            .filter(|k| !results.contains_key(*k))
+            .map(|k| k.as_slice())
+            .collect();
+
+        for (i, db_res) in db.multi_get(&misses).into_iter().enumerate() {
+            results.insert(misses[i].to_vec(), db_res);
+        }
+        keys.iter()
+            .map(|k| results.remove(k).unwrap_or(Ok(None)))
+            .collect()
+    }
+}
+
+pub enum DBHandle<'a> {
+    Direct(&'a Arc<DB>),
+    Staged(WriteBatchWithCache),
+}
+
+impl<'a> DBHandle<'a> {
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        match self {
+            DBHandle::Direct(db) => db.get(key),
+            DBHandle::Staged(batch) => batch.get_deep(&key.to_vec()),
+        }
+    }
+
+    pub fn multi_get(&self, keys: &Vec<Vec<u8>>) -> Vec<Result<Option<Vec<u8>>, rocksdb::Error>> {
+        match self {
+            DBHandle::Direct(db) => db.multi_get(keys.iter().map(|k| k.as_slice())),
+            DBHandle::Staged(batch) => batch.multi_get_deep(keys),
+        }
+    }
+
+    pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), rocksdb::Error> {
+        match self {
+            DBHandle::Direct(db) => db.put(&key, &value),
+            DBHandle::Staged(batch) => {
+                batch.put(key, value);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn delete(&mut self, key: Vec<u8>) -> Result<(), rocksdb::Error> {
+        match self {
+            DBHandle::Direct(db) => db.delete(&key),
+            DBHandle::Staged(batch) => {
+                batch.delete(&key);
+                Ok(())
+            }
         }
     }
 }
@@ -163,9 +293,8 @@ pub struct IndexerTipStateSerializable {
     pub indexer_tip_hash: String,
 }
 
-pub fn get_indexer_tip() -> Result<IndexerTipState, DBError> {
-    let db = state::get();
-    let indexer_height = match db.get("indexer_height") {
+pub fn get_indexer_tip(db: &DBHandle) -> Result<IndexerTipState, DBError> {
+    let indexer_height = match db.get(b"indexer_height") {
         Ok(Some(result)) => {
             let bytes: [u8; 4] = result.as_slice().try_into()?;
             u32::from_le_bytes(bytes)
@@ -179,7 +308,7 @@ pub fn get_indexer_tip() -> Result<IndexerTipState, DBError> {
         }
     };
 
-    let indexer_tip_hash: StoredBlockHash = match db.get("indexer_tip_hash") {
+    let indexer_tip_hash: StoredBlockHash = match db.get(b"indexer_tip_hash") {
         Ok(Some(result)) => result.into(),
 
         Ok(None) => GENESIS_HASH.into(),
@@ -196,22 +325,23 @@ pub fn get_indexer_tip() -> Result<IndexerTipState, DBError> {
     })
 }
 
-pub fn save_new_indexer_tip(new_state: &IndexerTipState) -> Result<(), DBError> {
-    let db = state::get();
-
-    db.put("indexer_height", new_state.indexer_height.to_le_bytes())
-        .map_err(|e| {
-            eprintln!(
-                "{}: {}",
-                "Failed to save new indexer height".red().bold(),
-                e
-            );
-            DBError::from(e)
-        })?;
+pub fn save_new_indexer_tip(db: &mut DBHandle, new_state: &IndexerTipState) -> Result<(), DBError> {
+    db.put(
+        b"indexer_height".to_vec(),
+        new_state.indexer_height.to_le_bytes().to_vec(),
+    )
+    .map_err(|e| {
+        eprintln!(
+            "{}: {}",
+            "Failed to save new indexer height".red().bold(),
+            e
+        );
+        DBError::from(e)
+    })?;
 
     db.put(
-        "indexer_tip_hash",
-        new_state.indexer_tip_hash.0.to_byte_array(),
+        b"indexer_tip_hash".to_vec(),
+        new_state.indexer_tip_hash.0.to_byte_array().to_vec(),
     )
     .map_err(|e| {
         eprintln!(
@@ -225,12 +355,14 @@ pub fn save_new_indexer_tip(new_state: &IndexerTipState) -> Result<(), DBError> 
     Ok(())
 }
 
-pub fn save_utxo_script_mapping(utxo: OutPoint, script: &ScriptBuf) -> Result<(), DBError> {
-    let db = state::get();
-
+pub fn save_utxo_script_mapping(
+    db: &mut DBHandle,
+    utxo: OutPoint,
+    script: &ScriptBuf,
+) -> Result<(), DBError> {
     let map_key = get_utxo_db_key(utxo);
 
-    match db.put(map_key, script.as_bytes()) {
+    match db.put(map_key, script.as_bytes().to_vec()) {
         Ok(_) => Ok(()),
         Err(e) => {
             eprintln!("{}: {}", "Failed to save UTXO".red().bold(), e);
@@ -240,16 +372,17 @@ pub fn save_utxo_script_mapping(utxo: OutPoint, script: &ScriptBuf) -> Result<()
 }
 
 // Get all associated utxo -> address mappings for a block in one rocksdb call
-pub fn bulk_get_utxo_script_mappings(vins: &Vec<&TxIn>) -> HashMap<Vec<u8>, Vec<u8>> {
-    let db = state::get();
-
+pub fn bulk_get_utxo_script_mappings(
+    db: &DBHandle,
+    vins: &Vec<&TxIn>,
+) -> HashMap<Vec<u8>, Vec<u8>> {
     let utxo_keys: Vec<Vec<u8>> = vins
         .iter()
         .map(|vin| get_utxo_db_key(vin.previous_output))
         .collect();
 
     let mut utxo_script_map = HashMap::with_capacity(utxo_keys.len());
-    let db_response = db.multi_get(&utxo_keys);
+    let db_response: Vec<Result<Option<Vec<u8>>, rocksdb::Error>> = db.multi_get(&utxo_keys);
 
     for (utxo_key, result) in utxo_keys.iter().zip(db_response) {
         match result {
@@ -331,33 +464,33 @@ pub fn get_address_mapping_from_pubkey(pubkey_bytes: &Vec<u8>) -> Option<Address
 //pubkey:{pubkey bytes}:{address mapping} ====> address mapping: 0x0a as seperator, first byte is u8 and defines addr type for parser. ex: [u8, [u8,unsized]]0x0a[u8, [u8,unsized]]
 //address:{address utf8 bytes}:{pubkey}
 pub fn save_decoded_script_mapping(
+    db: &mut DBHandle,
     pubkey: &Vec<u8>,
     delete_outpoint: &Vec<u8>, //we free up disk storage by deleting utxo mappings once they are used.
 ) -> Result<(), DBError> {
-    let db = state::get();
-
     let Some(address_map) = get_address_mapping_from_pubkey(pubkey) else {
         let utxo_key = get_utxo_db_key_from_bytes(delete_outpoint);
         db.delete(utxo_key)?;
         return Ok(());
     };
 
-    let search_keys = vec![
+    let search_keys: Vec<Vec<u8>> = vec![
         address_map.p2tr,
         address_map.p2pkh,
         address_map.p2shp2wpkh,
         address_map.p2wpkh,
     ]
     .into_iter()
-    .map(|key| get_amap_db_key(&key));
+    .map(|key| get_amap_db_key(&key))
+    .collect();
 
-    let db_response = db.multi_get(search_keys.clone());
+    let db_response = db.multi_get(&search_keys);
 
-    for (search_key, result) in search_keys.zip(db_response) {
+    for (search_key, result) in search_keys.iter().zip(db_response) {
         match result {
             Ok(Some(_)) => continue,
             Ok(None) => {
-                db.put(search_key, &pubkey)?;
+                db.put(search_key.clone(), pubkey.clone())?;
             }
             Err(err) => {
                 eprintln!(
@@ -384,6 +517,7 @@ pub struct AliasResponse {
     pub aliases: Option<AddressMapping>,
 }
 
+//Called by API - calls db directly.
 pub fn get_aliases_from_pubkey(pubkey: &Vec<u8>) -> AliasResponse {
     let address_mapping = get_address_mapping_from_pubkey(pubkey);
     AliasResponse {
@@ -392,10 +526,8 @@ pub fn get_aliases_from_pubkey(pubkey: &Vec<u8>) -> AliasResponse {
     }
 }
 
-pub fn get_aliases_from_address(address: &String) -> Option<AliasResponse> {
-    let db = state::get();
-
-    match db.get(get_amap_db_key(address)) {
+pub fn get_aliases_from_address(db: &DBHandle, address: &String) -> Option<AliasResponse> {
+    match db.get(&get_amap_db_key(address)) {
         Ok(Some(pubkey)) => Some(get_aliases_from_pubkey(&pubkey)),
         Ok(None) => None,
         Err(err) => {

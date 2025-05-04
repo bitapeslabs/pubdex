@@ -13,5 +13,7 @@ cargo run --release -- --config ./Indexer.toml
 ```rust
 [u8]("indexer_height") -> u32
 [u8]("indexer_tip_hash") -> u32
-[u8, unsized](address bytes, utf-encoded) -> [u8, 33] (pubkey bytes)
+[u8]("cnt:pk") -> u32 (pubkey count)
+[b"pk:" + [u8,8]] -> [u8, 33] (pubkey bytes)
+[u8, unsized]b"amap"+(address bytes, utf-encoded) -> [u8, 8] (id bytes)
 ```
