@@ -320,10 +320,28 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
             let mut new_utxo_mappings = 0;
             let batch = WriteBatchWithCache::new();
             let mut db_handle: DBHandle = DBHandle::Staged(batch);
-        
-            for (vout_index, vout) in block.txdata.iter().flat_map(|tx| tx.output.iter()).enumerate() {
-                // … (your existing outpoint logic) …
-                new_utxo_mappings += 1;
+            for transaction in &block.txdata {
+
+
+                for vout_index in 0..transaction.output.len(){
+                    let vout = &transaction.output[vout_index];
+
+                        let outpoint: OutPoint = OutPoint { 
+                            txid: transaction.compute_txid(), 
+                            vout: vout_index.try_into().expect(&"failed to parse vout index into u32".red().bold()) 
+                        };
+
+                        new_utxo_mappings += 1;
+
+                        match db::save_utxo_script_mapping(&mut db_handle, outpoint, &vout.script_pubkey) {
+                            Ok(()) => continue,
+                            Err(err) => {
+                                eprintln!("{}: {}", "An error ocurred saving utxo".red().bold(),err);
+                                panic!()
+                            }
+                        };
+
+                }
                 // db::save_utxo_script_mapping(&mut db_handle, …)?;
             }
             let ms_utx = t_utx.elapsed().as_millis();
@@ -334,7 +352,25 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
             let utxo_address_map = db::bulk_get_utxo_script_mappings(&db_handle, &vins);
             let mut new_pmap_mappings = 0;
             for vin in vins {
-                // … (your existing pubkey decode + save) …
+                let outpoint_key = get_utxo_db_key(vin.previous_output);
+
+                let fund_script_bytes = match utxo_address_map.get(&outpoint_key){
+                    Some(script) => script,
+                    None => continue
+                };
+
+                
+                let decoded_script = match get_pub_key(fund_script_bytes, &vin.script_sig, &vin.witness) {
+                    Some(decoded_script) => decoded_script,
+                    None => continue,
+                };
+                
+
+                if let Err(err) = db::save_decoded_script_mapping(&mut db_handle, &decoded_script.pubkey, &outpoint_key) {
+                    eprintln!("{}: {}", "Failed to save decoded script mapping".red().bold(), err);
+                    panic!();
+                }
+                
                 new_pmap_mappings += 4;
             }
             let ms_pmap = t_pmap.elapsed().as_millis();
