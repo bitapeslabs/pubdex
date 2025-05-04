@@ -72,7 +72,6 @@ impl From<IndexerTipState> for IndexerTipStateSerializable {
         }
     }
 }
-
 pub struct WriteBatchWithCache {
     pub write_batch: WriteBatch,
     pub cache: HashMap<Vec<u8>, Vec<u8>>,
@@ -171,6 +170,13 @@ impl<'a> DBHandle<'a> {
         match self {
             DBHandle::Direct(db) => db.get(key),
             DBHandle::Staged(batch) => batch.get_deep(&key.to_vec()),
+        }
+    }
+
+    pub fn into_inner(self) -> Option<WriteBatch> {
+        match self {
+            DBHandle::Direct(_) => None,
+            DBHandle::Staged(batch) => Some(batch.into_inner()),
         }
     }
 

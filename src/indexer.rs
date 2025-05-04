@@ -299,7 +299,7 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
             let mut new_utxo_mappings = 0;
 
             //batch is managed by the indexer loop and propagated down
-            let mut batch = WriteBatchWithCache::new();
+            let batch = WriteBatchWithCache::new();
             let mut db_handle: DBHandle = DBHandle::Staged(batch);
 
             
@@ -369,17 +369,23 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
                 new_pmap_mappings += 4;
             };
 
-            println!("{}: #{}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed block".blue().bold(), height, &block.txdata.len(), new_pmap_mappings, new_utxo_mappings);
 
-
-            match db::save_new_indexer_tip(&mut db_handle, &IndexerTipState { indexer_height: height, indexer_tip_hash: StoredBlockHash(block_hash) }) {
-                Ok(()) => continue,
-                Err(err) => {
-                    eprintln!("{}: {}", "An error ocurred while saving indexer height".red().bold(),err);
+            let Ok(_) = db::save_new_indexer_tip(&mut db_handle, &IndexerTipState { indexer_height: height, indexer_tip_hash: StoredBlockHash(block_hash) }) else {
+                
+                
+                    eprintln!("{}", "An error ocurred while saving indexer height".red().bold());
                     panic!()
-                }
+                
             };
 
+            let inner_batch: rocksdb::WriteBatchWithTransaction<false> = db_handle.into_inner().expect("Tried reading inner from db direct instance");
+
+            if let Err(err) = db.write(inner_batch){
+                eprintln!("{}: {}", "Failed to write inner batch".red().bold(), err);
+                panic!();
+            }
+
+            println!("{}: #{}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed block".blue().bold(), height, &block.txdata.len(), new_pmap_mappings, new_utxo_mappings);
 
 
         }
