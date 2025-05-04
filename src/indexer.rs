@@ -358,28 +358,45 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
             let mut new_pmap_mappings = 0;
 
 
+            let t_pmap = std::time::Instant::now(); // Start timer
+
             for vin in vins {
                 let outpoint_key = get_utxo_db_key(vin.previous_output);
-
-                let fund_script_bytes = match utxo_address_map.get(&outpoint_key){
+            
+                let fund_script_bytes = match utxo_address_map.get(&outpoint_key) {
                     Some(script) => script,
-                    None => continue
+                    None => continue,
                 };
-
-                
+            
                 let decoded_script = match get_pub_key(fund_script_bytes, &vin.script_sig, &vin.witness) {
                     Some(decoded_script) => decoded_script,
                     None => continue,
                 };
-                
-
-                if let Err(err) = db::save_decoded_script_mapping(&mut db_handle, &decoded_script.pubkey, &outpoint_key) {
-                    eprintln!("{}: {}", "Failed to save decoded script mapping".red().bold(), err);
+            
+                if let Err(err) = db::save_decoded_script_mapping(
+                    &mut db_handle,
+                    &decoded_script.pubkey,
+                    &outpoint_key,
+                ) {
+                    eprintln!(
+                        "{}: {}",
+                        "Failed to save decoded script mapping".red().bold(),
+                        err
+                    );
                     panic!();
                 }
-                
+            
                 new_pmap_mappings += 4;
-            };
+            }
+            
+            let ms_pmap = t_pmap.elapsed().as_millis();
+            println!(
+                "{} processed VIN mappings: {} entries in {} ms",
+                "[INDEXER]".blue().bold(),
+                new_pmap_mappings.to_string().cyan(),
+                ms_pmap.to_string().yellow()
+            );
+            
 
 
             let Ok(_) = db::save_new_indexer_tip(&mut db_handle, &IndexerTipState { indexer_height: height, indexer_tip_hash: StoredBlockHash(block_hash) }) else {
