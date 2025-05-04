@@ -268,7 +268,7 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
 
     if expected_parent != actual_parent {
         eprintln!("{}, expected parent: {}, got: {}", "Reorg detected! Local DB is out of sync with node.".red().bold(), expected_parent, actual_parent);
-        //panic!();
+        panic!();
     }
 
     loop {
@@ -283,7 +283,7 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
         );
 
 
-        for height in 720000..indexer_state.chain_height {
+        for height in indexer_state.indexer_height..indexer_state.chain_height {
 
             let mut new_utxo_mappings = 0;
 
