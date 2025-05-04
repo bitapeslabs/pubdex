@@ -11,8 +11,6 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use ctrlc;
-use std::time::{Duration, Instant};
-
 use bitcoin::{XOnlyPublicKey, BlockHash, OutPoint, ScriptBuf, TxIn, script::Instruction, secp256k1::hashes::hash160};
 //[u8]("block_tip") -> u32
 //[u8, 33](utxo id) -> [u8, unsized] address bytes (str) (!! utxos are deleted after being used)
@@ -294,63 +292,72 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
             indexer_state.indexer_height,
             indexer_state.chain_height
         );
-        // ── tweak these if you like ───────────────────────────────────────────────────
-        const SUMMARY_EVERY: u128 = 50;      // print a summary every N blocks
-        const WIDTH: usize = 8;             // width of the block‑number column
 
-        // ── inside run_indexer(), replace the inner `for height in …` loop (and a bit
-        //    below) with the *instrumented* version shown below ────────────────────────
-        let mut rolling_start  = Instant::now();
-        let mut rolling_blocks = 0_u128;
 
         for height in indexer_state.indexer_height..indexer_state.chain_height {
-            let t_block_start = Instant::now();
-        
-            // --- 1. RPC: fetch block --------------------------------------------------
-            let t_rpc = Instant::now();
-            let block_hash = RpcApi::get_block_hash(&rpc_client, height.into())
-                .unwrap_or_else(|err| { eprintln!("get_block_hash: {err}"); panic!() });
-        
-            let block = RpcApi::get_block(&rpc_client, &block_hash)
-                .unwrap_or_else(|err| { eprintln!("get_block: {err}"); panic!() });
-            let ms_rpc = t_rpc.elapsed().as_millis();
-        
-            // --- 2. outputs → utxo_map -----------------------------------------------
-            let t_utx = Instant::now();
+
             let mut new_utxo_mappings = 0;
+
+            //batch is managed by the indexer loop and propagated down
             let batch = WriteBatchWithCache::new();
             let mut db_handle: DBHandle = DBHandle::Staged(batch);
+
+            
+            let block_hash = RpcApi::get_block_hash(&rpc_client, height.into()).unwrap_or_else(|err|{
+                eprintln!("{}: {}", "An error ocurred getting block hash",err);
+                panic!()
+            });
+
+            let block = RpcApi::get_block(&rpc_client, &block_hash).unwrap_or_else(|err| {
+                eprintln!("{}: {}", "An error ocurred getting block hash",err);
+                panic!()
+            });
+            
+            let t_utx = std::time::Instant::now(); // Start timer
+
             for transaction in &block.txdata {
-
-
-                for vout_index in 0..transaction.output.len(){
+                // save new utxos
+                for vout_index in 0..transaction.output.len() {
                     let vout = &transaction.output[vout_index];
-
-                        let outpoint: OutPoint = OutPoint { 
-                            txid: transaction.compute_txid(), 
-                            vout: vout_index.try_into().expect(&"failed to parse vout index into u32".red().bold()) 
-                        };
-
-                        new_utxo_mappings += 1;
-
-                        match db::save_utxo_script_mapping(&mut db_handle, outpoint, &vout.script_pubkey) {
-                            Ok(()) => continue,
-                            Err(err) => {
-                                eprintln!("{}: {}", "An error ocurred saving utxo".red().bold(),err);
-                                panic!()
-                            }
-                        };
-
+            
+                    let outpoint: OutPoint = OutPoint {
+                        txid: transaction.compute_txid(),
+                        vout: vout_index
+                            .try_into()
+                            .expect(&"failed to parse vout index into u32".red().bold()),
+                    };
+            
+                    new_utxo_mappings += 1;
+            
+                    match db::save_utxo_script_mapping(&mut db_handle, outpoint, &vout.script_pubkey) {
+                        Ok(()) => continue,
+                        Err(err) => {
+                            eprintln!(
+                                "{}: {}",
+                                "An error occurred saving utxo".red().bold(),
+                                err
+                            );
+                            panic!()
+                        }
+                    };
                 }
-                // db::save_utxo_script_mapping(&mut db_handle, …)?;
             }
+            
             let ms_utx = t_utx.elapsed().as_millis();
-        
-            // --- 3. inputs  → pubkey_map ---------------------------------------------
-            let t_pmap = Instant::now();
-            let vins: Vec<&TxIn> = block.txdata.iter().flat_map(|tx| &tx.input).collect();
+            println!(
+                "{} processed UTXOs: {} outputs in {} ms",
+                "[INDEXER]".blue().bold(),
+                new_utxo_mappings.to_string().cyan(),
+                ms_utx.to_string().yellow()
+            );
+
+
+            //save mappings
+            let vins: Vec<&TxIn> = (&block.txdata).iter().map(|tx|&tx.input).flatten().collect();
             let utxo_address_map = db::bulk_get_utxo_script_mappings(&db_handle, &vins);
             let mut new_pmap_mappings = 0;
+
+
             for vin in vins {
                 let outpoint_key = get_utxo_db_key(vin.previous_output);
 
@@ -372,51 +379,37 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
                 }
                 
                 new_pmap_mappings += 4;
+            };
+
+
+            let Ok(_) = db::save_new_indexer_tip(&mut db_handle, &IndexerTipState { indexer_height: height, indexer_tip_hash: StoredBlockHash(block_hash) }) else {
+                
+                
+                    eprintln!("{}", "An error ocurred while saving indexer height".red().bold());
+                    panic!()
+                
+            };
+
+            let inner_batch: rocksdb::WriteBatchWithTransaction<false> = db_handle.into_inner().expect("Tried reading inner from db direct instance");
+
+            if let Err(err) = db.write(inner_batch){
+                eprintln!("{}: {}", "Failed to write inner batch".red().bold(), err);
+                panic!();
             }
-            let ms_pmap = t_pmap.elapsed().as_millis();
-        
-            // --- 4. save tip & write batch -------------------------------------------
-            let t_write = Instant::now();
-            db::save_new_indexer_tip(
-                &mut db_handle,
-                &IndexerTipState { indexer_height: height, indexer_tip_hash: StoredBlockHash(block_hash) }
-            ).expect("save tip");
-        
-            let inner = db_handle.into_inner().expect("into_inner");
-            if let Err(err) = db.write(inner) {
-                eprintln!("write_batch: {err}");
-                panic!()
-            }
-            let ms_write = t_write.elapsed().as_millis();
-        
-            // --- 5. pretty per‑block log ---------------------------------------------
-            let total = t_block_start.elapsed().as_millis();
-            println!(
-                "blk {h:>width$} | {txs:>5} tx | +{utx:>5} utx | +{pmap:>4} pmap | \
-                 rpc {ms_rpc:>4} ms | utx {ms_utx:>4} ms | pmap {ms_pmap:>4} ms | write {ms_write:>4} ms | total {total:>4} ms",
-                h      = height,
-                width  = WIDTH,
-                txs    = block.txdata.len(),
-                utx    = new_utxo_mappings,
-                pmap   = new_pmap_mappings,
-                ms_rpc = ms_rpc,
-                ms_utx = ms_utx,
-                ms_pmap= ms_pmap,
-                ms_write= ms_write,
-                total  = total,
-            );
-        
-            // --- 6. rolling summary ---------------------------------------------------
-            rolling_blocks += 1;
-            if rolling_blocks % SUMMARY_EVERY == 0 {
-                let avg: u128 = rolling_start.elapsed().as_millis() / SUMMARY_EVERY;
-                println!(
-                    "{} processed {SUMMARY_EVERY} blocks ⇒ avg {} ms / block",
-                    "⏱".bright_blue(),
-                    avg.to_string().green()
-                );
-                rolling_start = Instant::now();
-            }
+
+            println!("{}: #{}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed block".blue().bold(), height, &block.txdata.len(), new_pmap_mappings, new_utxo_mappings);
+
+
         }
+        println!(
+            "{}{}{}",
+            "[INDEXER] Block chunk finished processing, waiting ".yellow(),
+            LOOP_INTERVAL.to_string().yellow(),
+            "ms before checking for new state".yellow()
+        );
+        ::std::thread::sleep(::std::time::Duration::from_millis(LOOP_INTERVAL));
+
+
     }
+
 }
