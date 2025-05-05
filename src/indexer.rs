@@ -308,6 +308,18 @@ pub fn get_pub_key(
         }
     }
 
+    if fund_script.is_p2pk() {
+        // First instruction must be <pubkey>
+        let mut iter = fund_script.instructions();
+    
+        if let Some(Ok(Instruction::PushBytes(pk_bytes))) = iter.next() {
+    
+            return Some(DecodedScript {
+                pubkey: pk_bytes.as_bytes().to_vec()
+            });
+        }
+    }
+
 
     None
 }
@@ -511,7 +523,6 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                 let _ = decoded_script.compress_if_necessary();
                 
                 pubkey_cache.insert(if seek_pubkey.len() != 0 { &seek_pubkey } else { &decoded_script.pubkey });
-                utxo_address_map.remove(&fund_script_bytes);
 
                 if let Err(err) = db::save_decoded_script_mapping(
                     &mut db_handle,
@@ -526,6 +537,8 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                     panic!();
                 }
             
+                utxo_address_map.remove(&fund_script_bytes);
+
                 new_pmap_mappings += 4;
             }
             
