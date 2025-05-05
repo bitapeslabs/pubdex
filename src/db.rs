@@ -450,7 +450,7 @@ pub fn get_address_mapping_from_pubkey(pubkey_bytes: &Vec<u8>) -> Option<Address
         panic!();
     });
 
-    let xonly = XOnlyPublicKey::from_slice(&public_key.to_bytes()[1..])
+    let xonly = XOnlyPublicKey::from_slice(&pubkey_bytes[1..])
         .expect(&"x only slice error: valid x‑only key".red().bold());
 
     let p2pkh = Address::p2pkh(&public_key, *ENABLED_NETWORK_KIND).to_string();
@@ -477,6 +477,11 @@ pub fn save_decoded_script_mapping(
         db.delete(utxo_key)?;
         return Ok(());
     };
+
+    println!("{}", address_map.p2tr);
+    println!("{}", address_map.p2pkh);
+    println!("{}", address_map.p2shp2wpkh);
+    println!("{}", address_map.p2wpkh);
 
     let search_keys: Vec<Vec<u8>> = vec![
         address_map.p2tr,
