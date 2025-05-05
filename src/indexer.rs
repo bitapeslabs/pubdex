@@ -403,6 +403,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
         let mut total_tx_amount: usize = 0;
         let mut total_cache_hits: usize = 0;
         let mut total_utxo_mappings: usize = 0;
+        let mut total_ms_rpc: u128 = 0;
         let mut a_time = std::time::Instant::now(); // Start timer
 
         for height in indexer_state.indexer_height..indexer_state.chain_height {
@@ -413,7 +414,8 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             let batch = WriteBatchWithCache::new();
             let mut db_handle: DBHandle = DBHandle::Staged(batch);
 
-            
+            let rpc_time = std::time::Instant::now(); // Start timer
+
             let block_hash = RpcApi::get_block_hash(&rpc_client, height.into()).unwrap_or_else(|err|{
                 eprintln!("{}: {}", "An error ocurred getting block hash",err);
                 panic!()
@@ -423,6 +425,8 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                 eprintln!("{}: {}", "An error ocurred getting block hash",err);
                 panic!()
             });
+
+            let rpc_elapsed = rpc_time.elapsed().as_millis();
             
             let t_utx = std::time::Instant::now(); // Start timer
 
@@ -535,6 +539,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             total_ms_write += w_elapsed;
             total_cache_hits += cache_hits;
             total_utxo_mappings += new_utxo_mappings;
+            total_ms_rpc += rpc_elapsed;
 
             if log_iter >= config.indexer.log_interval{
                 let elapsed = a_time.elapsed().as_millis();
@@ -562,6 +567,13 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
 
                 );
 
+                println!(
+                    "{} Cumulative RPC time (ms): {}",
+                    "[INDEXER]".blue().bold(),
+                    total_ms_rpc.to_string().blue(),
+
+                );
+
                 println!("{}: #{} -> {}, with {} transactions. Total time: {}ms", "[INDEXER] Processed blocks".blue().bold(), (height - config.indexer.log_interval).to_string().yellow(), height.to_string().green().bold(), &total_tx_amount, elapsed.to_string().yellow().bold());
                 println!("{}: {}", "Pubkey Hashset size -> ".yellow().bold(), &pubkey_cache.count);
                 log_iter = 0;
@@ -571,6 +583,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                 total_ms_write = 0;
                 total_cache_hits = 0;
                 total_utxo_mappings = 0;
+                total_ms_rpc = 0;
             }
 
         }
