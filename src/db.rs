@@ -434,6 +434,7 @@ pub fn create_p2sh_p2wpkh(p2wpkh_address: &Address) -> String {
 pub fn get_address_mapping_from_pubkey(pubkey_bytes: &Vec<u8>) -> Option<AddressMapping> {
     //Were trying to pass in a p2pk, which we cant parse
     if pubkey_bytes.len() != 33 {
+        println!("{}", pubkey_bytes.len());
         return None;
     }
 
