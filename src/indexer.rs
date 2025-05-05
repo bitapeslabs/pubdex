@@ -520,12 +520,13 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             let w_time = std::time::Instant::now(); // Start timer
 
             let inner_batch: rocksdb::WriteBatchWithTransaction<false> = db_handle.into_inner().expect("Tried reading inner from db direct instance");
-            let w_elapsed = w_time.elapsed().as_millis();
 
             if let Err(err) = db.write(inner_batch){
                 eprintln!("{}: {}", "Failed to write inner batch".red().bold(), err);
                 panic!();
             }
+            let w_elapsed = w_time.elapsed().as_millis();
+
             log_iter += 1;
 
             total_ms_utx += ms_utx;
