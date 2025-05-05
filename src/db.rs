@@ -1,4 +1,5 @@
 use crate::chain::{ENABLED_NETWORK_HRP, ENABLED_NETWORK_KIND, GENESIS_HASH};
+use crate::indexer::{CompressKey, DecodedScript};
 use crate::state;
 use bitcoin::hashes::Hash;
 use bitcoin::{
@@ -434,7 +435,7 @@ pub fn create_p2sh_p2wpkh(p2wpkh_address: &Address) -> String {
 pub fn get_address_mapping_from_pubkey(pubkey_bytes: &Vec<u8>) -> Option<AddressMapping> {
     // 1. Parse the 33‑byte compressed key (0x02/0x03 prefix).
     let public_key = PublicKey::from_slice(pubkey_bytes).expect(
-        &"public_key slice errpr: expected 33‑byte compressed pubkey"
+        &"public_key slice errr: expected 33‑byte compressed pubkey"
             .red()
             .bold(),
     );
@@ -554,12 +555,21 @@ pub struct AliasResponse {
 }
 
 //Called by API - calls db directly.
-pub fn get_aliases_from_pubkey(pubkey: &Vec<u8>) -> AliasResponse {
-    let address_mapping = get_address_mapping_from_pubkey(pubkey);
-    AliasResponse {
+pub fn get_aliases_from_pubkey(pubkey: &Vec<u8>) -> Option<AliasResponse> {
+    let mut decoded = DecodedScript {
+        pubkey: pubkey.to_vec(),
+    };
+    decoded.compress_if_necessary();
+
+    if decoded.pubkey.len() != 33 {
+        return None;
+    }
+
+    let address_mapping = get_address_mapping_from_pubkey(&decoded.pubkey);
+    Some(AliasResponse {
         pubkey: hex::encode(pubkey),
         aliases: address_mapping,
-    }
+    })
 }
 
 pub fn get_aliases_from_address(db: &DBHandle, address: &String) -> Option<AliasResponse> {
@@ -571,5 +581,5 @@ pub fn get_aliases_from_address(db: &DBHandle, address: &String) -> Option<Alias
         return None;
     };
 
-    Some(get_aliases_from_pubkey(&pubkey))
+    get_aliases_from_pubkey(&pubkey)
 }

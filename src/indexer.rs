@@ -223,11 +223,10 @@ impl GrpHashsetCacheMethods for GrpHashset {
 
 pub struct DecodedScript {
     pub pubkey: Vec<u8>,
-    pub address_type: IndexerAddressType
 }
 
 
-trait CompressKey {
+pub trait CompressKey {
     fn compress_if_necessary(&mut self) -> ();
 }
 
@@ -253,7 +252,7 @@ pub fn get_pub_key(
         let xonly_bytes = &fund_script.as_bytes()[2..34];
         if let Ok(xonly) = XOnlyPublicKey::from_slice(xonly_bytes) {
             return Some(
-                DecodedScript { pubkey: xonly.public_key(Parity::Even).serialize().to_vec(), address_type: IndexerAddressType::P2TR });
+                DecodedScript { pubkey: xonly.public_key(Parity::Even).serialize().to_vec() });
         }
     }
 
@@ -264,7 +263,7 @@ pub fn get_pub_key(
             // sanity‑check: hash160(pubkey) must match program
             let h160 = hash160::Hash::hash(pk_bytes);
             if fund_script.as_bytes()[2..22] == h160[..] {
-                return Some(DecodedScript { pubkey: pk_bytes.to_vec(), address_type: IndexerAddressType::P2SHP2WPKH });
+                return Some(DecodedScript { pubkey: pk_bytes.to_vec() });
             }
         }
     }
@@ -281,7 +280,7 @@ pub fn get_pub_key(
             if (pk_bytes.len() == 33 && (pk_bytes[0] == 0x02 || pk_bytes[0] == 0x03))
                || (pk_bytes.len() == 65 && pk_bytes[0] == 0x04)
             {
-                return Some(DecodedScript { pubkey: pk_bytes.as_bytes().to_vec(), address_type: IndexerAddressType::P2PKH });
+                return Some(DecodedScript { pubkey: pk_bytes.as_bytes().to_vec() });
             }
         }
     }
@@ -301,7 +300,7 @@ pub fn get_pub_key(
                 // cross‑check hash160
                 let h160 = hash160::Hash::hash(pk_bytes);
                 if redeem_script.as_bytes()[2..22] == h160[..] {
-                    return Some(DecodedScript { pubkey: pk_bytes.to_vec(), address_type: IndexerAddressType::P2SHP2WPKH });
+                    return Some(DecodedScript { pubkey: pk_bytes.to_vec() });
                 }
             }
         }
