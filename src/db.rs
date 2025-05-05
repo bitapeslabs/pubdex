@@ -242,30 +242,34 @@ impl From<UTXO> for [u8; 36] {
 
 //Key formatters
 
-pub fn get_utxo_db_key_from_bytes(bytes: &Vec<u8>) -> Vec<u8> {
-    let db_key_slice = b"utxo: ";
-
-    let mut map_key = Vec::with_capacity(db_key_slice.len() + bytes.len());
-    map_key.extend_from_slice(db_key_slice);
-    map_key.extend_from_slice(&bytes);
+pub fn get_key(path: &[u8], key: &[u8]) -> Vec<u8> {
+    let mut map_key = Vec::with_capacity(path.len() + key.len());
+    map_key.extend_from_slice(path);
+    map_key.extend_from_slice(key);
     map_key
+}
+
+pub fn get_utxo_db_key_from_bytes(bytes: &[u8]) -> Vec<u8> {
+    get_key(b"utxo:", bytes)
 }
 
 pub fn get_utxo_db_key(utxo: OutPoint) -> Vec<u8> {
     let bytes: [u8; 36] = (UTXO { outpoint: utxo }).into();
 
-    get_utxo_db_key_from_bytes(&bytes.to_vec())
+    get_utxo_db_key_from_bytes(&bytes)
 }
 
 //address -> publicKey
 pub fn get_amap_db_key(address: &String) -> Vec<u8> {
-    let db_key_slice = b"amap: ";
-    let address_bytes = address.as_bytes();
+    get_key(b"amap:", address.as_bytes())
+}
 
-    let mut map_key = Vec::with_capacity(db_key_slice.len() + address_bytes.len());
-    map_key.extend_from_slice(db_key_slice);
-    map_key.extend_from_slice(&address_bytes);
-    map_key
+pub fn get_cnt_pk_key() -> Vec<u8> {
+    b"cnt:pk".to_vec()
+}
+
+pub fn get_pk_key_from_id_bytes(id: &[u8]) -> Vec<u8> {
+    get_key(b"pk:", id)
 }
 
 impl std::error::Error for DBError {}
@@ -491,11 +495,25 @@ pub fn save_decoded_script_mapping(
 
     let db_response = db.multi_get(&search_keys);
 
+    let count_key = get_cnt_pk_key();
+
+    let pubkey_count = u64::from_le_bytes(
+        db.get(&count_key)?
+            .unwrap_or_default()
+            .try_into()
+            .expect("u64::max overflow @ save_decoded_script_mapping"),
+    ) + 1;
+
+    let pubkey_id_key = get_pk_key_from_id_bytes(&pubkey_count.to_le_bytes());
+
+    db.put(pubkey_id_key, pubkey.clone())?;
+    db.put(count_key, pubkey_count.to_le_bytes().to_vec())?;
+
     for (search_key, result) in search_keys.iter().zip(db_response) {
         match result {
             Ok(Some(_)) => continue,
             Ok(None) => {
-                db.put(search_key.clone(), pubkey.clone())?;
+                db.put(search_key.clone(), pubkey_count.to_le_bytes().to_vec())?;
             }
             Err(err) => {
                 eprintln!(
@@ -532,15 +550,13 @@ pub fn get_aliases_from_pubkey(pubkey: &Vec<u8>) -> AliasResponse {
 }
 
 pub fn get_aliases_from_address(db: &DBHandle, address: &String) -> Option<AliasResponse> {
-    match db.get(&get_amap_db_key(address)) {
-        Ok(Some(pubkey)) => Some(get_aliases_from_pubkey(&pubkey)),
-        Ok(None) => None,
-        Err(err) => {
-            println!(
-                "{}: {}",
-                "WARN: An error ocurred while getting amap key", err
-            );
-            None
-        }
-    }
+    let Some(pubkey_id) = db.get(&get_amap_db_key(address)).ok().flatten() else {
+        return None;
+    };
+
+    let Some(pubkey) = db.get(&get_pk_key_from_id_bytes(&pubkey_id)).ok().flatten() else {
+        return None;
+    };
+
+    Some(get_aliases_from_pubkey(&pubkey))
 }
