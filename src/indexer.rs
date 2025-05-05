@@ -402,6 +402,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
         let mut total_ms_write: u128 = 0;
         let mut total_tx_amount: usize = 0;
         let mut total_cache_hits: usize = 0;
+        let mut total_utxo_mappings: usize = 0;
         let mut a_time = std::time::Instant::now(); // Start timer
 
         for height in indexer_state.indexer_height..indexer_state.chain_height {
@@ -532,6 +533,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             total_tx_amount += block.txdata.len();
             total_ms_write += w_elapsed;
             total_cache_hits += cache_hits;
+            total_utxo_mappings += new_utxo_mappings;
 
             if log_iter >= config.indexer.log_interval{
                 let elapsed = a_time.elapsed().as_millis();
@@ -540,7 +542,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                 println!(
                     "{} processed UTXOs: {} outputs in {} ms",
                     "[INDEXER]".blue().bold(),
-                    new_utxo_mappings.to_string().cyan(),
+                    total_utxo_mappings.to_string().cyan(),
                     total_ms_utx.to_string().yellow()
                 );
 
@@ -567,6 +569,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                 total_tx_amount = 0;
                 total_ms_write = 0;
                 total_cache_hits = 0;
+                total_utxo_mappings = 0;
             }
 
         }
