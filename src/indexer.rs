@@ -296,6 +296,37 @@ pub fn get_pub_key(
     None
 }
 
+pub fn try_peek_pubkey<'a>(
+    fund_script: &'a ScriptBuf,
+    spend_script: &'a ScriptBuf,
+    witness: &'a Witness,
+) -> Option<&'a [u8]> {
+    // P2TR: bytes 2..34
+    if fund_script.is_p2tr() && fund_script.len() == 34 {
+        return Some(&fund_script.as_bytes()[2..34]);
+    }
+
+    // P2WPKH or P2SH-P2WPKH: witness[1]
+    if fund_script.is_p2wpkh() || fund_script.is_p2sh() {
+        if witness.len() >= 2 {
+            return Some(&witness[1]);
+        }
+    }
+
+    // P2PKH: script_sig second push
+    if fund_script.is_p2pkh() {
+        let mut pushes = spend_script.instructions().filter_map(|i| {
+            if let Ok(Instruction::PushBytes(b)) = i { Some(b) } else { None }
+        });
+
+        pushes.next(); // skip sig
+        return pushes.next().map(|b| b.as_bytes());
+    }
+
+    None
+}
+
+
 pub static LOOP_INTERVAL: u64 = 1000;
 
 pub struct IndexerRuntimeConfig<'a> {
@@ -431,7 +462,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
 
             //save mappings
             let vins: Vec<&TxIn> = (&block.txdata).iter().map(|tx|&tx.input).flatten().collect();
-            let utxo_address_map = db::bulk_get_utxo_script_mappings(&db_handle, &vins);
+            let mut utxo_address_map = db::bulk_get_utxo_script_mappings(&db_handle, &vins);
             let mut new_pmap_mappings = 0;
 
 
@@ -441,19 +472,23 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                 let outpoint_key = get_utxo_db_key(vin.previous_output);
             
                 let fund_script_bytes = match utxo_address_map.get(&outpoint_key) {
-                    Some(script) => script,
+                    Some(script) => script.to_owned(),
                     None => continue,
                 };
             
-                let decoded_script = match get_pub_key(fund_script_bytes, &vin.script_sig, &vin.witness) {
+                let fund_script = ScriptBuf::from_bytes(fund_script_bytes.clone());
+                let Some(seek_pubkey) = try_peek_pubkey(&fund_script, &vin.script_sig, &vin.witness) else{ continue; };
+                if pubkey_cache.contains(&seek_pubkey) { continue; };
+
+                let decoded_script = match get_pub_key(&fund_script_bytes, &vin.script_sig, &vin.witness) {
                     Some(decoded_script) => decoded_script,
                     None => continue,
                 };
                 
                 if pubkey_cache.contains(&decoded_script.pubkey) { continue; };
-
+                pubkey_cache.insert(&seek_pubkey);
                 pubkey_cache.insert(&decoded_script.pubkey);
-
+                utxo_address_map.remove(&fund_script_bytes);
 
                 if let Err(err) = db::save_decoded_script_mapping(
                     &mut db_handle,
