@@ -226,6 +226,21 @@ pub struct DecodedScript {
     pub address_type: IndexerAddressType
 }
 
+
+trait CompressKey {
+    fn compress_if_necessary(&mut self) -> ();
+}
+
+
+impl CompressKey for DecodedScript {
+   fn compress_if_necessary(&mut self) -> () {
+        if self.pubkey.len() == 65 {
+            self.pubkey = secp256k1::PublicKey::from_slice(&self.pubkey).expect("Malformed PublicKey in Decoded Script").serialize().to_vec()
+        }
+    }
+}
+
+
 pub fn get_pub_key(
     fund_script_bytes: &Vec<u8>,
     spend_script: &ScriptBuf,
@@ -487,10 +502,12 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                     continue; 
                 };
 
-                let decoded_script = match get_pub_key(&fund_script_bytes, &vin.script_sig, &vin.witness) {
+                let mut decoded_script = match get_pub_key(&fund_script_bytes, &vin.script_sig, &vin.witness) {
                     Some(decoded_script) => decoded_script,
                     None => continue,
                 };
+
+                decoded_script.compress_if_necessary();
                 
                 pubkey_cache.insert(&seek_pubkey);
                 utxo_address_map.remove(&fund_script_bytes);
