@@ -227,15 +227,17 @@ pub struct DecodedScript {
 
 
 pub trait CompressKey {
-    fn compress_if_necessary(&mut self) -> ();
+    fn compress_if_necessary(&mut self) -> Result<(), secp256k1::Error>;
 }
 
 
 impl CompressKey for DecodedScript {
-   fn compress_if_necessary(&mut self) -> () {
+   fn compress_if_necessary(&mut self) -> Result<(), secp256k1::Error> {
         if self.pubkey.len() == 65 {
-            self.pubkey = secp256k1::PublicKey::from_slice(&self.pubkey).expect("Malformed PublicKey in Decoded Script").serialize().to_vec()
+            self.pubkey = secp256k1::PublicKey::from_slice(&self.pubkey)?.serialize().to_vec()
         }
+        Ok(())
+
     }
 }
 
