@@ -478,6 +478,15 @@ pub fn save_decoded_script_mapping(
         return Ok(());
     };
 
+    if address_map.p2pkh == "1EYTGtG4LnFfiMvjJdsU7GMGCQvsRSjYhx" {
+        println!(
+            "{}",
+            "FOUND NEEDLE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                .yellow()
+                .bold()
+        )
+    }
+
     let search_keys: Vec<Vec<u8>> = vec![
         address_map.p2tr,
         address_map.p2pkh,
