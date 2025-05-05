@@ -6,7 +6,7 @@ ip = "127.0.0.1"
 port = 3000
 
 [bitcoin_rpc]
-rpc_url = "http://127.0.0.1:8332"
+rpc_url = "http://anoa.io:8332"
 rpc_user = "admin"
 rpc_password = "admin"
 
