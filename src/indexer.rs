@@ -401,6 +401,8 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
         let mut total_ms_pmap: u128 = 0;
         let mut total_ms_write: u128 = 0;
         let mut total_tx_amount: usize = 0;
+        let mut total_cache_hits: usize = 0;
+        let mut a_time = std::time::Instant::now(); // Start timer
 
         for height in indexer_state.indexer_height..indexer_state.chain_height {
 
@@ -529,9 +531,12 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             total_ms_pmap += ms_pmap;
             total_tx_amount += block.txdata.len();
             total_ms_write += w_elapsed;
+            total_cache_hits += cache_hits;
 
             if log_iter >= config.indexer.log_interval{
-    
+                let elapsed = a_time.elapsed().as_millis();
+                a_time = std::time::Instant::now();
+
                 println!(
                     "{} processed UTXOs: {} outputs in {} ms",
                     "[INDEXER]".blue().bold(),
@@ -544,7 +549,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                     "[INDEXER]".blue().bold(),
                     new_pmap_mappings.to_string().cyan(),
                     total_ms_pmap.to_string().yellow(),
-                    cache_hits.to_string().green().bold()
+                    total_cache_hits.to_string().green().bold()
                 );
                 
                 println!(
@@ -554,13 +559,14 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
 
                 );
 
-                println!("{}: #{} -> {}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed blocks".blue().bold(), (height - config.indexer.log_interval).to_string().yellow(), height.to_string().green().bold(), &total_tx_amount, new_pmap_mappings, new_utxo_mappings);
+                println!("{}: #{} -> {}, with {} transactions. Total time: {}ms", "[INDEXER] Processed blocks".blue().bold(), (height - config.indexer.log_interval).to_string().yellow(), height.to_string().green().bold(), &total_tx_amount, elapsed.to_string().yellow().bold());
                 println!("{}: {}", "Pubkey Hashset size -> ".yellow().bold(), &pubkey_cache.count);
                 log_iter = 0;
                 total_ms_pmap = 0;
                 total_ms_utx = 0;
                 total_tx_amount = 0;
                 total_ms_write = 0;
+                total_cache_hits = 0;
             }
 
         }
