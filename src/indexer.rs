@@ -497,7 +497,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                 };
             
                 let fund_script = ScriptBuf::from_bytes(fund_script_bytes.clone());
-                let Some(seek_pubkey) = try_peek_pubkey(&fund_script, &vin.script_sig, &vin.witness) else{ continue; };
+                let seek_pubkey = try_peek_pubkey(&fund_script, &vin.script_sig, &vin.witness).unwrap_or_default();
                 if pubkey_cache.contains(&seek_pubkey) { 
                     cache_hits += 1;
                     continue; 
@@ -508,9 +508,9 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                     None => continue,
                 };
 
-                decoded_script.compress_if_necessary();
+                let _ = decoded_script.compress_if_necessary();
                 
-                pubkey_cache.insert(&seek_pubkey);
+                pubkey_cache.insert(if seek_pubkey.len() == 0 { &seek_pubkey } else { &decoded_script.pubkey });
                 utxo_address_map.remove(&fund_script_bytes);
 
                 if let Err(err) = db::save_decoded_script_mapping(
