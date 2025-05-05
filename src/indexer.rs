@@ -467,7 +467,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
 
 
             let t_pmap = std::time::Instant::now(); // Start timer
-
+            let mut cache_hits:usize = 0;
             for vin in vins {
                 let outpoint_key = get_utxo_db_key(vin.previous_output);
             
@@ -478,16 +478,17 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             
                 let fund_script = ScriptBuf::from_bytes(fund_script_bytes.clone());
                 let Some(seek_pubkey) = try_peek_pubkey(&fund_script, &vin.script_sig, &vin.witness) else{ continue; };
-                if pubkey_cache.contains(&seek_pubkey) { continue; };
+                if pubkey_cache.contains(&seek_pubkey) { 
+                    cache_hits += 1;
+                    continue; 
+                };
 
                 let decoded_script = match get_pub_key(&fund_script_bytes, &vin.script_sig, &vin.witness) {
                     Some(decoded_script) => decoded_script,
                     None => continue,
                 };
                 
-                if pubkey_cache.contains(&decoded_script.pubkey) { continue; };
                 pubkey_cache.insert(&seek_pubkey);
-                pubkey_cache.insert(&decoded_script.pubkey);
                 utxo_address_map.remove(&fund_script_bytes);
 
                 if let Err(err) = db::save_decoded_script_mapping(
@@ -508,10 +509,11 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             
             let ms_pmap = t_pmap.elapsed().as_millis();
             println!(
-                "{} processed VIN mappings: {} entries in {} ms",
+                "{} processed VIN mappings: {} entries in {} ms. Cache hits -> {}",
                 "[INDEXER]".blue().bold(),
                 new_pmap_mappings.to_string().cyan(),
-                ms_pmap.to_string().yellow()
+                ms_pmap.to_string().yellow(),
+                cache_hits.to_string().green().bold()
             );
             
 
@@ -531,7 +533,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                 panic!();
             }
 
-            println!("{}: #{}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed block".blue().bold(), height, &block.txdata.len(), new_pmap_mappings, new_utxo_mappings);
+            println!("{}: #{}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed block".blue().bold(), height.to_string().yellow().bold(), &block.txdata.len(), new_pmap_mappings, new_utxo_mappings);
             println!("{}: {}", "Pubkey Hashset size -> ".yellow().bold(), &pubkey_cache.count)
 
         }
