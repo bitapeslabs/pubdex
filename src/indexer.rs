@@ -310,10 +310,13 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_signal = shutdown.clone();
 
-    let mut pubkey_cache = GrpHashset::new(config.indexer.mem_alloc_pubkey_hmap.try_into().unwrap_or_else(|err|{
+
+    let cache_size: usize = config.indexer.mem_alloc_pubkey_hmap.try_into().unwrap_or_else(|err|{
         eprintln!("{}: {}", "Maximum memory allocation for pubkey_hmap can not exceed U32::max",err);
         panic!()
-    }));
+    });
+
+    let mut pubkey_cache = GrpHashset::new(cache_size * 33);
 
     println!("{}: {}mb", "Using a max_alloc for pubkey_hmap of".green().bold(), config.indexer.mem_alloc_pubkey_hmap);
 
