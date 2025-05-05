@@ -497,7 +497,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             }
 
             println!("{}: #{}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed block".blue().bold(), height, &block.txdata.len(), new_pmap_mappings, new_utxo_mappings);
-
+            println!("{}: {}", "Pubkey Hashset size -> ".yellow().bold(), &pubkey_cache.count)
 
         }
         println!(
