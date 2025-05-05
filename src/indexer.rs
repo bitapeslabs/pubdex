@@ -318,7 +318,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
         panic!()
     });
 
-    let mut pubkey_cache = GrpHashset::new(cache_size / PUBKEY_SIZE);
+    let mut pubkey_cache = GrpHashset::new((cache_size * 1_000_000) / PUBKEY_SIZE);
 
     println!("{}: {}mb", "Using a max_alloc for pubkey_hmap of".green().bold(), config.indexer.mem_alloc_pubkey_hmap);
 
