@@ -3,7 +3,7 @@ use crate::db::{
     IndexerTipStateSerializable,
 };
 use crate::state;
-use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{get, post, web, web::Data, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::{AddrParseError, SocketAddrV4};
@@ -109,9 +109,9 @@ pub async fn start_api_server(ip: &str, port: &u16) -> Result<(), ApiError> {
 
     let server = HttpServer::new(|| {
         App::new()
-            .app_data(AppState {
+            .app_data(Data::new(AppState {
                 db_handle: DBHandle::Direct(db),
-            })
+            }))
             .service(indexer_state)
             .service(get_aliases_pubkey)
             .service(get_aliases_address)
