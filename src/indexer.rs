@@ -303,6 +303,8 @@ pub struct IndexerRuntimeConfig<'a> {
     pub indexer: &'a IndexerConfig
 } 
 
+pub static PUBKEY_SIZE: usize = 33;
+
 pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
     let db = state::get();
     let direct_db_handle = DBHandle::Direct(&db);
@@ -316,7 +318,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
         panic!()
     });
 
-    let mut pubkey_cache = GrpHashset::new(cache_size * 33);
+    let mut pubkey_cache = GrpHashset::new(cache_size * PUBKEY_SIZE);
 
     println!("{}: {}mb", "Using a max_alloc for pubkey_hmap of".green().bold(), config.indexer.mem_alloc_pubkey_hmap);
 
