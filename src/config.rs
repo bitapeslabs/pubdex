@@ -32,12 +32,27 @@ pub struct ApiConfig {
     pub ip: String,
     pub port: u16,
 }
+
+#[derive(Deserialize)]
+pub struct IndexerConfig {
+    pub mem_alloc_pubkey_hmap: u32,
+}
+
+impl Default for IndexerConfig {
+    fn default() -> Self {
+        Self {
+            mem_alloc_pubkey_hmap: 1028,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 
 pub struct Config {
     pub rocksdb: RocksDBConfig,
     pub api: ApiConfig,
     pub bitcoin_rpc: BitcoinRpcConfig,
+    pub indexer: IndexerConfig,
 }
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

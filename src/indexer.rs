@@ -1,4 +1,4 @@
-use crate::config::BitcoinRpcConfig;
+use crate::config::{BitcoinRpcConfig, IndexerConfig};
 use crate::db::{self, get_utxo_db_key, BatchManager, DBHandle, IndexerTipState, StoredBlockHash, WriteBatchWithCache};
 use crate::state;
 use bitcoin::hashes::Hash;
@@ -7,11 +7,13 @@ use bitcoin::{secp256k1, Witness};
 use bitcoincore_rpc::{Auth, Client, RpcApi, Error as BitcoinRpcError, jsonrpc};
 use colored::Colorize;
 use core::panic;
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use ctrlc;
 use bitcoin::{XOnlyPublicKey, BlockHash, OutPoint, ScriptBuf, TxIn, script::Instruction, secp256k1::hashes::hash160};
+use rand::{self, Rng};
 //[u8]("block_tip") -> u32
 //[u8, 33](utxo id) -> [u8, unsized] address bytes (str) (!! utxos are deleted after being used)
 //[u8, unsized](address bytes, utf-encoded) -> [u8, 33]
@@ -159,6 +161,64 @@ impl TryFrom<u8> for IndexerAddressType {
     }
 }
 
+//Growable randomly popped Hashmap
+pub struct GrpHashset{
+    pub vec: Vec<Vec<u8>>,
+    pub hashset: HashSet<Vec<u8>>,
+    pub count: usize,
+    pub max_size: usize,
+    pub rng: rand::rngs::ThreadRng
+
+}
+
+trait GrpHashsetCacheMethods {
+    
+    fn new(max_size: usize) -> GrpHashset;
+    fn contains(&self, key: &[u8]) -> bool;
+    fn get(&self, key: &[u8]) -> Option<&Vec<u8>>;
+    fn insert(&mut self, key: &[u8]) -> bool;
+}
+
+impl GrpHashsetCacheMethods for GrpHashset {
+
+    fn new(max_size: usize) -> Self {
+        GrpHashset{
+            vec: vec![],
+            hashset: HashSet::new(),
+            count: 0,
+            max_size,
+            rng: rand::rng()
+        } 
+    }
+
+    fn get(&self, key: &[u8]) -> Option<&Vec<u8>> {
+        self.hashset.get(key)
+    }
+
+    fn contains(&self, value: &[u8]) -> bool {
+         HashSet::contains(&self.hashset, value)
+    }
+
+    fn insert(&mut self, value: &[u8]) -> bool {
+        
+        self.count += 1;
+        let result = HashSet::insert(&mut self.hashset, value.to_vec());
+        self.vec.push(value.to_vec());
+        if self.count >= self.max_size {
+            let index_to_delete: usize = self.rng.random_range(0..self.max_size);
+
+            let item_to_delete = self.vec
+            .get(index_to_delete)
+            .expect("Random generator caused overflow at GrpHashmap::insert")
+            .clone();
+
+            self.vec.remove(index_to_delete);
+            HashSet::remove(&mut self.hashset, &item_to_delete);
+        }
+        result
+    }
+
+}
 
 
 pub struct DecodedScript {
@@ -238,13 +298,24 @@ pub fn get_pub_key(
 
 pub static LOOP_INTERVAL: u64 = 1000;
 
+pub struct IndexerRuntimeConfig<'a> {
+    pub rpc: &'a BitcoinRpcConfig,
+    pub indexer: &'a IndexerConfig
+} 
 
-pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
+pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
     let db = state::get();
     let direct_db_handle = DBHandle::Direct(&db);
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_signal = shutdown.clone();
+
+    let mut pubkey_cache = GrpHashset::new(config.indexer.mem_alloc_pubkey_hmap.try_into().unwrap_or_else(|err|{
+        eprintln!("{}: {}", "Maximum memory allocation for pubkey_hmap can not exceed U32::max",err);
+        panic!()
+    }));
+
+    println!("{}: {}mb", "Using a max_alloc for pubkey_hmap of".green().bold(), config.indexer.mem_alloc_pubkey_hmap);
 
     ctrlc::set_handler(move || {
         shutdown_signal.store(true, Ordering::SeqCst);
@@ -252,10 +323,10 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
     }).expect("Error setting Ctrl-C handler");
 
     let rpc_client = RetryClient { client: Client::new(
-        &rpc_config.rpc_url,
+        &config.rpc.rpc_url,
         Auth::UserPass(
-            rpc_config.rpc_user.to_string(),
-            rpc_config.rpc_password.to_string(),
+            config.rpc.rpc_user.to_string(),
+            config.rpc.rpc_password.to_string(),
         )
     )
     .unwrap_or_else(|err| {
@@ -326,7 +397,8 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
                             .try_into()
                             .expect(&"failed to parse vout index into u32".red().bold()),
                     };
-            
+                    
+
                     new_utxo_mappings += 1;
             
                     match db::save_utxo_script_mapping(&mut db_handle, outpoint, &vout.script_pubkey) {
@@ -372,7 +444,12 @@ pub fn run_indexer(rpc_config: &BitcoinRpcConfig) {
                     Some(decoded_script) => decoded_script,
                     None => continue,
                 };
-            
+                
+                if pubkey_cache.contains(&decoded_script.pubkey) { continue; };
+
+                pubkey_cache.insert(&decoded_script.pubkey);
+
+
                 if let Err(err) = db::save_decoded_script_mapping(
                     &mut db_handle,
                     &decoded_script.pubkey,

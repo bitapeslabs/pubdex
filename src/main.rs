@@ -9,7 +9,7 @@ use api::{start_api_server, ApiError};
 use colored::Colorize;
 use config::get_config;
 use db::{create_database, DBError};
-use indexer::run_indexer;
+use indexer::{run_indexer, IndexerRuntimeConfig};
 use std::fmt;
 use std::fmt::Debug;
 use std::panic;
@@ -69,7 +69,10 @@ async fn main() -> Result<(), PubdexError> {
     println!("{}", "Starting indexer...".cyan().bold());
     let _indexer_handle = tokio::task::spawn_blocking(move || {
         // tokio::runtime::Handle::current().block_on(run_indexer(...))
-        run_indexer(&config.bitcoin_rpc);
+        run_indexer(IndexerRuntimeConfig {
+            rpc: &config.bitcoin_rpc,
+            indexer: &config.indexer,
+        });
     });
 
     println!("{}", "Starting api server...".cyan().bold());
