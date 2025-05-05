@@ -344,12 +344,8 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
     let shutdown_signal = shutdown.clone();
 
 
-    let cache_size: usize = config.indexer.mem_alloc_pubkey_hset.try_into().unwrap_or_else(|err|{
-        eprintln!("{}: {}", "Maximum memory allocation for pubkey_hmap can not exceed U32::max",err);
-        panic!()
-    });
-
-    let mut pubkey_cache = GrpHashset::new(((cache_size * 1_000_000) / PUBKEY_SIZE)*2);
+    let cache_size: usize = ((config.indexer.mem_alloc_pubkey_hset* 1_000_000) / PUBKEY_SIZE)*2;
+    let mut pubkey_cache = GrpHashset::new(cache_size);
 
     println!("{}: {}mb", "Using a max_alloc for pubkey_hmap of".green().bold(), config.indexer.mem_alloc_pubkey_hset);
 
@@ -400,6 +396,9 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             indexer_state.chain_height
         );
 
+        let mut log_iter: u32 = 0;
+        let mut total_ms_utx: u128 = 0;
+        let mut total_ms_pmap: u128 = 0;
 
         for height in indexer_state.indexer_height..indexer_state.chain_height {
 
@@ -452,12 +451,6 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             }
             
             let ms_utx = t_utx.elapsed().as_millis();
-            println!(
-                "{} processed UTXOs: {} outputs in {} ms",
-                "[INDEXER]".blue().bold(),
-                new_utxo_mappings.to_string().cyan(),
-                ms_utx.to_string().yellow()
-            );
 
 
             //save mappings
@@ -508,14 +501,8 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             }
             
             let ms_pmap = t_pmap.elapsed().as_millis();
-            println!(
-                "{} processed VIN mappings: {} entries in {} ms. Cache hits -> {}",
-                "[INDEXER]".blue().bold(),
-                new_pmap_mappings.to_string().cyan(),
-                ms_pmap.to_string().yellow(),
-                cache_hits.to_string().green().bold()
-            );
-            
+
+
 
 
             let Ok(_) = db::save_new_indexer_tip(&mut db_handle, &IndexerTipState { indexer_height: height, indexer_tip_hash: StoredBlockHash(block_hash) }) else {
@@ -532,9 +519,33 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                 eprintln!("{}: {}", "Failed to write inner batch".red().bold(), err);
                 panic!();
             }
+            log_iter += 1;
 
-            println!("{}: #{}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed block".blue().bold(), height.to_string().yellow().bold(), &block.txdata.len(), new_pmap_mappings, new_utxo_mappings);
-            println!("{}: {}", "Pubkey Hashset size -> ".yellow().bold(), &pubkey_cache.count)
+            total_ms_utx += ms_utx;
+            total_ms_pmap += ms_pmap;
+
+            if log_iter >= config.indexer.log_interval{
+    
+                println!(
+                    "{} processed UTXOs: {} outputs in {} ms",
+                    "[INDEXER]".blue().bold(),
+                    new_utxo_mappings.to_string().cyan(),
+                    total_ms_utx.to_string().yellow()
+                );
+
+                println!(
+                    "{} processed VIN mappings: {} entries in {} ms. Cache hits -> {}",
+                    "[INDEXER]".blue().bold(),
+                    new_pmap_mappings.to_string().cyan(),
+                    total_ms_pmap.to_string().yellow(),
+                    cache_hits.to_string().green().bold()
+                );
+                
+
+                println!("{}: #{} -> {}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed blocks".blue().bold(), (height - config.indexer.log_interval).to_string().yellow(), height.to_string().green().bold(), &block.txdata.len(), new_pmap_mappings, new_utxo_mappings);
+                println!("{}: {}", "Pubkey Hashset size -> ".yellow().bold(), &pubkey_cache.count);
+                log_iter = 0;
+            }
 
         }
         println!(

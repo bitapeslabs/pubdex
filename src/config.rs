@@ -35,13 +35,15 @@ pub struct ApiConfig {
 
 #[derive(Deserialize)]
 pub struct IndexerConfig {
-    pub mem_alloc_pubkey_hset: u32,
+    pub mem_alloc_pubkey_hset: usize,
+    pub log_interval: u32,
 }
 
 impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
             mem_alloc_pubkey_hset: 1028,
+            log_interval: 10,
         }
     }
 }
