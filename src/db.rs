@@ -497,13 +497,13 @@ pub fn save_decoded_script_mapping(
 
     let count_key = get_cnt_pk_key();
 
-    let pubkey_count = u64::from_le_bytes(
-        db.get(&count_key)?
-            .unwrap_or_default()
-            .try_into()
-            .expect("u64::max overflow @ save_decoded_script_mapping"),
-    ) + 1;
-
+    let pubkey_count = db
+        .get(&count_key)?
+        .map(|bytes| {
+            u64::from_le_bytes(bytes.try_into().expect("Expected 8 bytes for pubkey_count"))
+        })
+        .unwrap_or(0)
+        + 1;
     let pubkey_id_key = get_pk_key_from_id_bytes(&pubkey_count.to_le_bytes());
 
     db.put(pubkey_id_key, pubkey.clone())?;
