@@ -347,7 +347,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
     let cache_size: usize = ((config.indexer.mem_alloc_pubkey_hset* 1_000_000) / PUBKEY_SIZE)*2;
     let mut pubkey_cache = GrpHashset::new(cache_size);
 
-    println!("{}: {}mb", "Using a max_alloc for pubkey_hmap of".green().bold(), config.indexer.mem_alloc_pubkey_hset);
+    println!("{}: {}mb", "Using a max_alloc for pubkey_hset of".green().bold(), config.indexer.mem_alloc_pubkey_hset);
 
     ctrlc::set_handler(move || {
         shutdown_signal.store(true, Ordering::SeqCst);
@@ -404,6 +404,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
         let mut total_cache_hits: usize = 0;
         let mut total_utxo_mappings: usize = 0;
         let mut total_ms_rpc: u128 = 0;
+        let mut total_ms_sutxo: u128 = 0;
         let mut a_time = std::time::Instant::now(); // Start timer
 
         for height in indexer_state.indexer_height..indexer_state.chain_height {
@@ -461,11 +462,12 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             
             let ms_utx = t_utx.elapsed().as_millis();
 
-
+            let sutxo_time = std::time::Instant::now(); // Start timer
             //save mappings
             let vins: Vec<&TxIn> = (&block.txdata).iter().map(|tx|&tx.input).flatten().collect();
             let mut utxo_address_map = db::bulk_get_utxo_script_mappings(&db_handle, &vins);
             let mut new_pmap_mappings = 0;
+            let sutxo_elapsed = sutxo_time.elapsed().as_millis();
 
 
             let t_pmap = std::time::Instant::now(); // Start timer
@@ -540,6 +542,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
             total_cache_hits += cache_hits;
             total_utxo_mappings += new_utxo_mappings;
             total_ms_rpc += rpc_elapsed;
+            total_ms_sutxo += sutxo_elapsed;
 
             if log_iter >= config.indexer.log_interval{
                 let elapsed = a_time.elapsed().as_millis();
@@ -570,7 +573,14 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                 println!(
                     "{} Cumulative RPC time (ms): {}",
                     "[INDEXER]".blue().bold(),
-                    total_ms_rpc.to_string().blue(),
+                    total_ms_rpc.to_string().cyan(),
+
+                );
+
+                println!(
+                    "{} Cumulative SUTXO save time (ms): {}",
+                    "[INDEXER]".blue().bold(),
+                    total_ms_sutxo.to_string().yellow(),
 
                 );
 
@@ -584,6 +594,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                 total_cache_hits = 0;
                 total_utxo_mappings = 0;
                 total_ms_rpc = 0;
+                total_ms_sutxo = 0;
             }
 
         }
