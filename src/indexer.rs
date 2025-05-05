@@ -510,7 +510,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
 
                 let _ = decoded_script.compress_if_necessary();
                 
-                pubkey_cache.insert(if seek_pubkey.len() == 0 { &seek_pubkey } else { &decoded_script.pubkey });
+                pubkey_cache.insert(if seek_pubkey.len() != 0 { &seek_pubkey } else { &decoded_script.pubkey });
                 utxo_address_map.remove(&fund_script_bytes);
 
                 if let Err(err) = db::save_decoded_script_mapping(

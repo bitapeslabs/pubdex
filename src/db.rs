@@ -559,7 +559,7 @@ pub fn get_aliases_from_pubkey(pubkey: &Vec<u8>) -> Option<AliasResponse> {
     let mut decoded = DecodedScript {
         pubkey: pubkey.to_vec(),
     };
-    decoded.compress_if_necessary();
+    let _ = decoded.compress_if_necessary();
 
     if decoded.pubkey.len() != 33 {
         return None;
