@@ -483,6 +483,11 @@ pub fn save_decoded_script_mapping(
         return Ok(());
     };
 
+    println!("{}", address_map.p2tr);
+    println!("{}", address_map.p2pkh);
+    println!("{}", address_map.p2shp2wpkh);
+    println!("{}", address_map.p2wpkh);
+
     let search_keys: Vec<Vec<u8>> = vec![
         address_map.p2tr,
         address_map.p2pkh,
