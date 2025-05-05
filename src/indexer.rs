@@ -313,14 +313,14 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
     let shutdown_signal = shutdown.clone();
 
 
-    let cache_size: usize = config.indexer.mem_alloc_pubkey_hmap.try_into().unwrap_or_else(|err|{
+    let cache_size: usize = config.indexer.mem_alloc_pubkey_hset.try_into().unwrap_or_else(|err|{
         eprintln!("{}: {}", "Maximum memory allocation for pubkey_hmap can not exceed U32::max",err);
         panic!()
     });
 
     let mut pubkey_cache = GrpHashset::new((cache_size * 1_000_000) / PUBKEY_SIZE);
 
-    println!("{}: {}mb", "Using a max_alloc for pubkey_hmap of".green().bold(), config.indexer.mem_alloc_pubkey_hmap);
+    println!("{}: {}mb", "Using a max_alloc for pubkey_hmap of".green().bold(), config.indexer.mem_alloc_pubkey_hset);
 
     ctrlc::set_handler(move || {
         shutdown_signal.store(true, Ordering::SeqCst);
