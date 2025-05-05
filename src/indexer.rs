@@ -399,6 +399,8 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
         let mut log_iter: u32 = 0;
         let mut total_ms_utx: u128 = 0;
         let mut total_ms_pmap: u128 = 0;
+        let mut total_ms_write: u128 = 0;
+        let mut total_tx_amount: usize = 0;
 
         for height in indexer_state.indexer_height..indexer_state.chain_height {
 
@@ -512,8 +514,10 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                     panic!()
                 
             };
+            let w_time = std::time::Instant::now(); // Start timer
 
             let inner_batch: rocksdb::WriteBatchWithTransaction<false> = db_handle.into_inner().expect("Tried reading inner from db direct instance");
+            let w_elapsed = w_time.elapsed().as_millis();
 
             if let Err(err) = db.write(inner_batch){
                 eprintln!("{}: {}", "Failed to write inner batch".red().bold(), err);
@@ -523,6 +527,8 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
 
             total_ms_utx += ms_utx;
             total_ms_pmap += ms_pmap;
+            total_tx_amount += block.txdata.len();
+            total_ms_write += w_elapsed;
 
             if log_iter >= config.indexer.log_interval{
     
@@ -541,12 +547,20 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) {
                     cache_hits.to_string().green().bold()
                 );
                 
+                println!(
+                    "{} Cumulative write time (ms): {}",
+                    "[INDEXER]".blue().bold(),
+                    total_ms_write.to_string().yellow(),
 
-                println!("{}: #{} -> {}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed blocks".blue().bold(), (height - config.indexer.log_interval).to_string().yellow(), height.to_string().green().bold(), &block.txdata.len(), new_pmap_mappings, new_utxo_mappings);
+                );
+
+                println!("{}: #{} -> {}, with {} transactions. New pmap/amap values: {} - New utxo_map values: {}", "[INDEXER] Processed blocks".blue().bold(), (height - config.indexer.log_interval).to_string().yellow(), height.to_string().green().bold(), &total_tx_amount, new_pmap_mappings, new_utxo_mappings);
                 println!("{}: {}", "Pubkey Hashset size -> ".yellow().bold(), &pubkey_cache.count);
                 log_iter = 0;
                 total_ms_pmap = 0;
                 total_ms_utx = 0;
+                total_tx_amount = 0;
+                total_ms_write = 0;
             }
 
         }
