@@ -278,6 +278,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) -> Result<(), IndexerEr
                         continue;
                     }
                 };
+
                 pubkey_cache.insert(if seek_pubkey.len() != 0 {
                     &seek_pubkey
                 } else {

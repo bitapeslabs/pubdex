@@ -80,7 +80,7 @@ impl Logger {
     }
 
     pub fn consume(&mut self) {
-        println!("{}{}", get_time_prefix(), " Consumed Timers:".bold().blue());
+        println!("{}", "Consumed Timers:".bold().blue());
 
         for (key, total_elapsed) in self.timer_results.drain() {
             println!(
@@ -90,11 +90,7 @@ impl Logger {
                 "(this run)".dimmed()
             );
         }
-        println!(
-            "{}{}",
-            get_time_prefix(),
-            " Consumed Counters:".bold().yellow()
-        );
+        println!("{}", "Consumed Counters:".bold().yellow());
 
         for (key, total) in self.counters.drain() {
             println!(
