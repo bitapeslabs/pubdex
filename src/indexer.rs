@@ -286,6 +286,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) -> Result<(), IndexerEr
                 logger.incement_counter("pmap_mappings", &4);
             }
 
+            logger.incement_counter("transactions_processed", &block.txdata.len());
             logger.stop_timer("process_vins");
 
             db::save_new_indexer_tip(
@@ -310,6 +311,12 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) -> Result<(), IndexerEr
             log_iter += 1;
 
             if log_iter >= config.indexer.log_interval {
+                Logger::success(&format!(
+                    "{}: #{} -> {}",
+                    "[INDEXER] Processed blocks",
+                    height - config.indexer.log_interval,
+                    height,
+                ));
                 logger.start_timer("total_elapsed_time");
                 logger.consume();
                 log_iter = 0;

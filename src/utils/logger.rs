@@ -99,7 +99,7 @@ impl Logger {
         for (key, total) in self.counters.drain() {
             println!(
                 "{} {} {}",
-                format!("- {:<20}", key).cyan(),
+                format!("- {:<20}", key).yellow(),
                 total.to_string().bold(),
                 "(this run)".dimmed()
             );
