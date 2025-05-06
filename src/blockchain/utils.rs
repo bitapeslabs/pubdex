@@ -133,13 +133,13 @@ pub fn get_pub_key(
     fund_script_bytes: &Vec<u8>,
     spend_script: &ScriptBuf,
     witness: &Witness,
-) -> Result<[u8; 33], BlockchainError> {
+) -> Result<Vec<u8>, BlockchainError> {
     let fund_script = ScriptBuf::from_bytes(fund_script_bytes.clone());
 
     if fund_script.is_p2tr() && fund_script.len() == 34 {
         let xonly_bytes = &fund_script.as_bytes()[2..34];
         if let Ok(xonly) = XOnlyPublicKey::from_slice(xonly_bytes) {
-            return Ok(xonly.public_key(Parity::Even).serialize().into());
+            return Ok(xonly.public_key(Parity::Even).serialize().to_vec());
         }
     }
 
@@ -149,7 +149,7 @@ pub fn get_pub_key(
             // sanity‑check: hash160(pubkey) must match program
             let h160 = hash160::Hash::hash(pk_bytes.try_into()?);
             if fund_script.as_bytes()[2..22] == h160[..] {
-                return Ok(pk_bytes.try_into()?);
+                return Ok(pk_bytes.to_vec());
             }
         }
     }
@@ -169,7 +169,7 @@ pub fn get_pub_key(
             if (pk_bytes.len() == 33 && (pk_bytes[0] == 0x02 || pk_bytes[0] == 0x03))
                 || (pk_bytes.len() == 65 && pk_bytes[0] == 0x04)
             {
-                return Ok(pk_bytes.as_bytes().try_into()?);
+                return Ok(pk_bytes.as_bytes().to_vec());
             }
         }
     }
@@ -191,7 +191,7 @@ pub fn get_pub_key(
                 // cross‑check hash160
                 let h160 = hash160::Hash::hash(pk_bytes);
                 if redeem_script.as_bytes()[2..22] == h160[..] {
-                    return Ok(pk_bytes.try_into()?);
+                    return Ok(pk_bytes.to_vec());
                 }
             }
         }
@@ -202,7 +202,7 @@ pub fn get_pub_key(
         let mut iter = fund_script.instructions();
 
         if let Some(Ok(Instruction::PushBytes(pk_bytes))) = iter.next() {
-            return Ok(pk_bytes.as_bytes().try_into()?);
+            return Ok(pk_bytes.as_bytes().to_vec());
         }
     }
 

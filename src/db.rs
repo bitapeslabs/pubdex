@@ -397,7 +397,7 @@ pub fn bulk_get_utxo_script_mappings(
 //address:{address utf8 bytes}:{pubkey}
 pub fn save_decoded_script_mapping(
     db: &mut DBHandle,
-    pubkey: &[u8; 33],
+    pubkey: &Vec<u8>,
     delete_outpoint: &Vec<u8>, //we free up disk storage by deleting utxo mappings once they are used.
 ) -> Result<(), DBError> {
     if hex::encode(pubkey).contains("69ab4181eceb28985b9b4e895c13fa5e68d85761b7eee311db5addef76fa8621865134a221bd01f28ec9999ee3e021e60766e9d1f3458c115fb28650605f11c9ac"){
@@ -409,7 +409,7 @@ pub fn save_decoded_script_mapping(
         )
     }
 
-    let Ok(address_map) = get_address_mapping_from_pubkey(&pubkey.to_vec()) else {
+    let Ok(address_map) = get_address_mapping_from_pubkey(pubkey) else {
         let utxo_key = get_utxo_db_key_from_bytes(delete_outpoint);
         db.delete(utxo_key)?;
         return Ok(());
