@@ -322,7 +322,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) -> Result<(), IndexerEr
                     height - config.indexer.log_interval,
                     height,
                 ));
-                logger.start_timer("total_elapsed_time");
+                logger.stop_timer("total_elapsed_time");
                 logger.consume();
                 log_iter = 0;
             }
