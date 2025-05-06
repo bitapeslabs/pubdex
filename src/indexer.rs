@@ -226,6 +226,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) -> Result<(), IndexerEr
                     };
 
                     db::save_utxo_script_mapping(&mut db_handle, outpoint, &vout.script_pubkey)?;
+                    logger.incement_counter("saved_utxos", &1);
                 }
             }
 
@@ -271,6 +272,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) -> Result<(), IndexerEr
 
                 let Ok(pubkey) = get_pub_key(&fund_script_bytes, &vin.script_sig, &vin.witness)
                 else {
+                    logger.incement_counter("failed_deserializations", &1);
                     continue;
                 };
 
@@ -324,7 +326,7 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) -> Result<(), IndexerEr
         }
         Logger::success(&format!(
             "{}{}{}",
-            "[INDEXER] Block chunk finished processing, waiting ",
+            "\n[INDEXER] Block chunk finished processing, waiting ",
             LOOP_INTERVAL,
             "ms before checking for new state"
         ));
