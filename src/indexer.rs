@@ -270,12 +270,14 @@ pub fn run_indexer<'a>(config: IndexerRuntimeConfig<'a>) -> Result<(), IndexerEr
                     continue;
                 };
 
-                let Ok(pubkey) = get_pub_key(&fund_script_bytes, &vin.script_sig, &vin.witness)
-                else {
-                    logger.incement_counter("failed_deserializations", &1);
-                    continue;
+                let pubkey = match get_pub_key(&fund_script_bytes, &vin.script_sig, &vin.witness) {
+                    Ok(pubkey) => pubkey,
+                    Err(err) => {
+                        logger.incement_counter("failed_deserializations", &1);
+                        Logger::error(&format!("Failed to deserialize pubkey: {}", err));
+                        continue;
+                    }
                 };
-
                 pubkey_cache.insert(if seek_pubkey.len() != 0 {
                     &seek_pubkey
                 } else {
