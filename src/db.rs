@@ -1,48 +1,42 @@
-use crate::chain::{ENABLED_NETWORK_HRP, ENABLED_NETWORK_KIND, GENESIS_HASH};
-use crate::indexer::{CompressKey, DecodedScript};
+use crate::blockchain::errors::BlockchainError;
+use crate::blockchain::{
+    utils::get_address_mapping_from_pubkey, utils::AddressMapping, utils::UTXO,
+};
+use crate::chain::GENESIS_HASH;
 use crate::state;
 use bitcoin::hashes::Hash;
-use bitcoin::{
-    secp256k1, Address, BlockHash, CompressedPublicKey, OutPoint, PublicKey, ScriptBuf, TxIn,
-    XOnlyPublicKey,
-};
+use bitcoin::{BlockHash, OutPoint, ScriptBuf, TxIn};
 use colored::Colorize;
 use rocksdb::{Options, WriteBatch, DB};
 use serde::{Deserialize, Serialize};
 use std::array::TryFromSliceError;
 use std::collections::HashMap;
-use std::fmt;
+
 use std::str::FromStr;
 use std::sync::Arc;
-thread_local! {
-    pub static SECP: secp256k1::Secp256k1<secp256k1::VerifyOnly> = secp256k1::Secp256k1::verification_only();
-}
-#[derive(Debug)]
+
+use thiserror::Error;
+
+#[derive(Error, Debug)]
 pub enum DBError {
-    SliceConversion(TryFromSliceError),
-    RocksDB(rocksdb::Error),
-}
+    #[error("Error: {0}")]
+    Error(String),
 
-impl From<TryFromSliceError> for DBError {
-    fn from(err: TryFromSliceError) -> Self {
-        DBError::SliceConversion(err)
+    #[error("Slice conversion error: {0}")]
+    SliceConversion(#[from] TryFromSliceError),
+
+    #[error("RocksDB error: {0}")]
+    RocksDB(#[from] rocksdb::Error),
+
+    #[error("Blockchain error: {0}")]
+    BlockchainError(#[from] BlockchainError),
+}
+impl DBError {
+    pub fn from<T: Into<String>>(err: T) -> Self {
+        DBError::Error(err.into())
     }
 }
 
-impl From<rocksdb::Error> for DBError {
-    fn from(err: rocksdb::Error) -> Self {
-        DBError::RocksDB(err)
-    }
-}
-
-impl fmt::Display for DBError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        match self {
-            DBError::SliceConversion(err) => write!(formatter, "Slice Conversion Error: {}", err),
-            DBError::RocksDB(err) => write!(formatter, "RocksDB error: {}", err),
-        }
-    }
-}
 pub struct StoredBlockHash(pub BlockHash);
 
 impl From<Vec<u8>> for StoredBlockHash {
@@ -211,34 +205,11 @@ impl<'a> DBHandle<'a> {
     }
 }
 
-pub struct UTXO {
-    pub outpoint: OutPoint,
-}
-#[derive(Serialize, Deserialize)]
-pub struct AddressMapping {
-    p2tr: String,
-    p2wpkh: String,
-    p2shp2wpkh: String,
-    p2pkh: String,
-}
-
 #[derive(Debug)]
 pub enum AddressDecodeError {
     InvalidUtf8(&'static str),
     MalformedSeparator,
     InvalidAddressType,
-}
-
-impl From<UTXO> for [u8; 36] {
-    fn from(utxo: UTXO) -> Self {
-        let txid_bytes = utxo.outpoint.txid.to_byte_array();
-        let vout_bytes = utxo.outpoint.vout.to_le_bytes();
-
-        let mut temp = [0u8; 36];
-        temp[..32].copy_from_slice(&txid_bytes);
-        temp[32..].copy_from_slice(&vout_bytes);
-        temp
-    }
 }
 
 //Key formatters
@@ -272,8 +243,6 @@ pub fn get_cnt_pk_key() -> Vec<u8> {
 pub fn get_pk_key_from_id_bytes(id: &[u8]) -> Vec<u8> {
     get_key(b"pk:", id)
 }
-
-impl std::error::Error for DBError {}
 
 pub fn create_database(path: &str) -> Result<DB, DBError> {
     let mut options = Options::default();
@@ -424,56 +393,14 @@ pub fn bulk_get_utxo_script_mappings(
     utxo_script_map
 }
 
-pub fn create_p2sh_p2wpkh(p2wpkh_address: &Address) -> String {
-    let redeem_script = p2wpkh_address.script_pubkey();
-
-    Address::p2sh(&redeem_script, *ENABLED_NETWORK_KIND)
-        .expect(&"Failed to get p2sh_p2wpkh from pubkey".red().bold())
-        .to_string()
-}
-
-pub fn get_address_mapping_from_pubkey(pubkey_bytes: &Vec<u8>) -> Option<AddressMapping> {
-    // 1. Parse the 33‑byte compressed key (0x02/0x03 prefix).
-    let public_key = PublicKey::from_slice(pubkey_bytes).expect(
-        &"public_key slice errr: expected 33‑byte compressed pubkey"
-            .red()
-            .bold(),
-    );
-
-    let compressed_pk: CompressedPublicKey = public_key.try_into().unwrap_or_else(|err| {
-        eprintln!(
-            "{}: {}",
-            "Unexpected failure: compressed already, so try_into() must succeed"
-                .red()
-                .bold(),
-            err
-        );
-        panic!();
-    });
-
-    let xonly = XOnlyPublicKey::from_slice(&pubkey_bytes[1..])
-        .expect(&"x only slice error: valid x‑only key".red().bold());
-
-    let p2pkh = Address::p2pkh(&public_key, *ENABLED_NETWORK_KIND).to_string();
-    let p2wpkh = Address::p2wpkh(&compressed_pk, *ENABLED_NETWORK_HRP);
-    let p2shp2wpkh = create_p2sh_p2wpkh(&p2wpkh);
-    let p2tr = SECP.with(|secp| Address::p2tr(secp, xonly, None, *ENABLED_NETWORK_HRP).to_string());
-    Some(AddressMapping {
-        p2pkh,
-        p2wpkh: p2wpkh.to_string(),
-        p2shp2wpkh,
-        p2tr,
-    })
-}
-
 //pubkey:{pubkey bytes}:{address mapping} ====> address mapping: 0x0a as seperator, first byte is u8 and defines addr type for parser. ex: [u8, [u8,unsized]]0x0a[u8, [u8,unsized]]
 //address:{address utf8 bytes}:{pubkey}
 pub fn save_decoded_script_mapping(
     db: &mut DBHandle,
-    pubkey: &Vec<u8>,
+    pubkey: &[u8; 33],
     delete_outpoint: &Vec<u8>, //we free up disk storage by deleting utxo mappings once they are used.
 ) -> Result<(), DBError> {
-    if(hex::encode(pubkey).contains("69ab4181eceb28985b9b4e895c13fa5e68d85761b7eee311db5addef76fa8621865134a221bd01f28ec9999ee3e021e60766e9d1f3458c115fb28650605f11c9ac")){
+    if hex::encode(pubkey).contains("69ab4181eceb28985b9b4e895c13fa5e68d85761b7eee311db5addef76fa8621865134a221bd01f28ec9999ee3e021e60766e9d1f3458c115fb28650605f11c9ac"){
         println!(
             "{}",
             "FOUND NEEDLE HEX!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
@@ -482,20 +409,11 @@ pub fn save_decoded_script_mapping(
         )
     }
 
-    let Some(address_map) = get_address_mapping_from_pubkey(pubkey) else {
+    let Ok(address_map) = get_address_mapping_from_pubkey(&pubkey.to_vec()) else {
         let utxo_key = get_utxo_db_key_from_bytes(delete_outpoint);
         db.delete(utxo_key)?;
         return Ok(());
     };
-
-    if address_map.p2pkh == "1EYTGtG4LnFfiMvjJdsU7GMGCQvsRSjYhx" {
-        println!(
-            "{}",
-            "FOUND NEEDLE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-                .yellow()
-                .bold()
-        )
-    }
 
     let search_keys: Vec<Vec<u8>> = vec![
         address_map.p2tr,
@@ -504,6 +422,7 @@ pub fn save_decoded_script_mapping(
         address_map.p2wpkh,
     ]
     .into_iter()
+    .flatten()
     .map(|key| get_amap_db_key(&key))
     .collect();
 
@@ -520,7 +439,7 @@ pub fn save_decoded_script_mapping(
         + 1;
     let pubkey_id_key = get_pk_key_from_id_bytes(&pubkey_count.to_le_bytes());
 
-    db.put(pubkey_id_key, pubkey.clone())?;
+    db.put(pubkey_id_key, pubkey.to_vec())?;
     db.put(count_key, pubkey_count.to_le_bytes().to_vec())?;
 
     for (search_key, result) in search_keys.iter().zip(db_response) {
@@ -555,31 +474,22 @@ pub struct AliasResponse {
 }
 
 //Called by API - calls db directly.
-pub fn get_aliases_from_pubkey(pubkey: &Vec<u8>) -> Option<AliasResponse> {
-    let mut decoded = DecodedScript {
-        pubkey: pubkey.to_vec(),
-    };
-    let _ = decoded.compress_if_necessary();
-
-    if decoded.pubkey.len() != 33 {
-        return None;
-    }
-
-    let address_mapping = get_address_mapping_from_pubkey(&decoded.pubkey);
-    Some(AliasResponse {
+pub fn get_aliases_from_pubkey(pubkey: &Vec<u8>) -> Result<AliasResponse, BlockchainError> {
+    let address_mapping = get_address_mapping_from_pubkey(&pubkey)?;
+    Ok(AliasResponse {
         pubkey: hex::encode(pubkey),
-        aliases: address_mapping,
+        aliases: Some(address_mapping),
     })
 }
 
-pub fn get_aliases_from_address(db: &DBHandle, address: &String) -> Option<AliasResponse> {
+pub fn get_aliases_from_address(db: &DBHandle, address: &String) -> Result<AliasResponse, DBError> {
     let Some(pubkey_id) = db.get(&get_amap_db_key(address)).ok().flatten() else {
-        return None;
+        return Err(DBError::from("pubkey_id not found"));
     };
 
     let Some(pubkey) = db.get(&get_pk_key_from_id_bytes(&pubkey_id)).ok().flatten() else {
-        return None;
+        return Err(DBError::from("pubkey not found"));
     };
 
-    get_aliases_from_pubkey(&pubkey)
+    get_aliases_from_pubkey(&pubkey).map_err(DBError::BlockchainError)
 }

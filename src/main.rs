@@ -1,9 +1,11 @@
 pub mod api;
+pub mod blockchain;
 pub mod chain;
 pub mod config;
 pub mod db;
 pub mod indexer;
 pub mod state;
+pub mod utils;
 
 use api::{start_api_server, ApiError};
 use colored::Colorize;
@@ -13,6 +15,7 @@ use indexer::{run_indexer, IndexerRuntimeConfig};
 use std::fmt;
 use std::fmt::Debug;
 use std::panic;
+use utils::logger::Logger;
 
 use std::sync::Arc;
 
@@ -69,10 +72,12 @@ async fn main() -> Result<(), PubdexError> {
     println!("{}", "Starting indexer...".cyan().bold());
     let _indexer_handle = tokio::task::spawn_blocking(move || {
         // tokio::runtime::Handle::current().block_on(run_indexer(...))
-        run_indexer(IndexerRuntimeConfig {
+        if let Err(e) = run_indexer(IndexerRuntimeConfig {
             rpc: &config.bitcoin_rpc,
             indexer: &config.indexer,
-        });
+        }) {
+            Logger::error_panic(&format!("Indexer Error: {e}"));
+        }
     });
 
     println!("{}", "Starting api server...".cyan().bold());

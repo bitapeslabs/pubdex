@@ -79,7 +79,14 @@ async fn get_aliases_pubkey(req: web::Json<PubkeyAliasRequest>) -> impl Responde
     };
 
     // Get aliases
-    HttpResponse::Ok().json(get_aliases_from_pubkey(&pubkey_bytes))
+    match get_aliases_from_pubkey(&pubkey_bytes) {
+        Ok(alias_response) => HttpResponse::Ok().json(alias_response),
+        Err(_) => {
+            return HttpResponse::BadRequest().json(ApiJsonError {
+                message: format!("No aliases found for pubkey: {}", pubkey_hex),
+            });
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -95,8 +102,8 @@ async fn get_aliases_address<'a>(
 
     // Try to decode hex into bytes
     match get_aliases_from_address(&data.db_handle, address) {
-        Some(alias_response) => HttpResponse::Ok().json(alias_response),
-        None => {
+        Ok(alias_response) => HttpResponse::Ok().json(alias_response),
+        Err(_) => {
             return HttpResponse::BadRequest().json(ApiJsonError {
                 message: format!("No aliases found for address: {}", address),
             });
